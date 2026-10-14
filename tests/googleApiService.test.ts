@@ -271,6 +271,35 @@ test('GIS initialization waits for a delayed script and preserves explicit popup
   assert.match(callbackResponse.error_description, /關閉/);
 });
 
+test('popup and silent login request only app-file and identity access without historical grants', async () => {
+  let initialization: any;
+  const requests: any[] = [];
+  (globalThis as any).google = { accounts: { oauth2: { initTokenClient: (options: any) => {
+    initialization = options;
+    return { requestAccessToken: (overrides: any) => { requests.push(overrides); } };
+  } } } };
+  await api.initGis(() => {});
+  api.signInWithPopup();
+  api.signInSilently();
+
+  const expectedScopes = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/userinfo.email',
+  ].sort();
+  assert.deepEqual(initialization.scope.split(/\s+/).sort(), expectedScopes);
+  assert.equal(initialization.include_granted_scopes, false, 'Old broader consent must not be added to a new access token');
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], {});
+  assert.deepEqual(requests[1], { prompt: 'none' });
+  for (const overrides of requests) {
+    // GIS applies request overrides to the initialized token client configuration.
+    const effective = { ...initialization, ...overrides };
+    assert.deepEqual(effective.scope.split(/\s+/).sort(), expectedScopes);
+    assert.equal(effective.include_granted_scopes, false);
+  }
+});
+
 
 test('replacing a photo creates a distinct revision and sheet failure leaves the old photo intact', async () => {
   const uploaded: Array<{ id: string; name: string }> = [];

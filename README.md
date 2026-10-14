@@ -49,6 +49,12 @@ Google 同步需啟用 Sheets／Drive API，設定 OAuth 同意畫面，並將�
 
 目前預設 OAuth 用戶端為 `959741792176-makrjgf2p65l0a9p6kdsn7k0386v9vl2.apps.googleusercontent.com`，正式網站來源為 `https://business-card-keeper.ai.studio`。若出現 `400 origin_mismatch`，請在 [Google Cloud 用戶端設定](https://console.cloud.google.com/auth/clients) 編輯實際使用的網頁用戶端，將此來源加入「已授權的 JavaScript 來源」，保留其他仍使用中的來源。若部署環境已有 `VITE_GOOGLE_CLIENT_ID`，須同步更新為此 ID 或移除覆寫，並重新建置、部署；僅修改執行時環境變數不會更新已打包的前端。
 
+## 公開給所有人使用
+
+本版 Google 同步使用 `drive.file` 與基本個人資料／Email 權限，僅存取本 App 建立或取得授權的檔案，不再要求完整試算表權限。舊權限政策或其他 OAuth 用戶端的登入快取會失效，需要重新登入，名片仍保留。
+
+部署後，`/about.html` 與 `/privacy.html` 是不需登入即可閱讀的應用介紹及隱私政策。請在 Google Cloud 設定相同專案的資料權限、品牌資訊，並將目標對象設為 **External → In production**，解除測試名單限制。GitHub 推送不會修改 Google 的發布狀態；正式發布也不等於品牌驗證完成。完整可填寫的網址、操作步驟與舊資料注意事項見 [公開發布指引](docs/google-public-release.md)。
+
 在受管理的 Codex 雲端環境，沿用平台 HTTPS 代理與 CA 設定；Node 24 可使用 `NODE_USE_ENV_PROXY=1 npm run dev`。不要停用 TLS 驗證。
 
 ## 驗證與正式啟動
@@ -69,10 +75,11 @@ BASE_URL=http://127.0.0.1:3100 python3 tests/browser-scan-smoke.py
 BASE_URL=http://127.0.0.1:3100 python3 tests/browser-sync-smoke.py
 BASE_URL=http://127.0.0.1:3100 python3 tests/browser-storage-smoke.py
 BASE_URL=http://127.0.0.1:3100 python3 tests/browser-api-key-smoke.py
+BASE_URL=http://127.0.0.1:3100 python3 tests/browser-public-smoke.py
 python3 tests/browser-camera-quality.py
 ```
 
-前四個測試需先在相同埠啟動應用程式；相機畫質測試會自行啟動暫時的測試頁面。這些測試使用合成圖片、合成金鑰、模擬相機及辨識／Google API；單元測試也使用可控的 Gemini、Google 及 IndexedDB 替身，無需真實金鑰。它們驗證流程與錯誤處理，不能代替真實手機相機、模型品質或 OAuth 同步的驗收。
+前五個測試需先在相同埠啟動應用程式；相機畫質測試會自行啟動暫時的測試頁面。這些測試使用合成圖片、合成金鑰、模擬相機及辨識／Google API；單元測試也使用可控的 Gemini、Google 及 IndexedDB 替身，無需真實金鑰。它們驗證流程與錯誤處理，不能代替真實手機相機、模型品質或 OAuth 同步的驗收。
 
 ## 設計與相容性
 

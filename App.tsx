@@ -16,6 +16,8 @@ import { GOOGLE_CLIENT_ID } from './config';
 
 declare const gapi: any;
 const AUTH_KEY = 'KEEPER_GOOGLE_AUTH';
+// A saved bearer token must belong to this client and the current permission policy.
+const AUTH_POLICY = 'drive-file-v1';
 const nextTime = (previous = 0) => Math.max(Date.now(), previous + 1);
 const blankCard = (): BusinessCard => ({ id: crypto.randomUUID(), name: '', company: '', title: '', phone: '', email: '', address: '', notes: '', rawText: '', timestamp: Date.now() });
 const errorText = (error: unknown) => error instanceof Error ? error.message : '請稍後再試。';
@@ -122,7 +124,7 @@ export default function App() {
       setGoogleError(null);
       // Session-only tokens; do not keep bearer tokens in persistent local storage.
       try {
-        sessionStorage.setItem(AUTH_KEY, JSON.stringify({ tokenResponse: token, user, expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000 }));
+        sessionStorage.setItem(AUTH_KEY, JSON.stringify({ clientId: GOOGLE_CLIENT_ID, authPolicy: AUTH_POLICY, tokenResponse: token, user, expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000 }));
         localStorage.removeItem(AUTH_KEY);
       } catch { /* Login can work even when browser storage for the session is unavailable. */ }
       notify('success', '已登入，正在自動同步此帳號與未同步的本機名片。');
@@ -153,14 +155,14 @@ export default function App() {
         setGoogleError(null);
         try {
           const saved = JSON.parse(sessionStorage.getItem(AUTH_KEY) || 'null');
-          if (saved?.expiresAt > Date.now() && typeof saved.user?.email === 'string' && saved.tokenResponse?.access_token) {
+          if (saved?.clientId === GOOGLE_CLIENT_ID && saved.authPolicy === AUTH_POLICY && saved.expiresAt > Date.now() && typeof saved.user?.email === 'string' && saved.tokenResponse?.access_token) {
             generation.current++;
             GoogleApiService.signOut();
             gapi.client.setToken(saved.tokenResponse);
             userRef.current = saved.user;
             setGoogleUser(saved.user);
             setSyncStatus(SyncStatus.READY_TO_SYNC);
-          }
+          } else if (saved) sessionStorage.removeItem(AUTH_KEY);
         } catch { /* A malformed/expired session does not prevent local work. */ }
       } catch {
         if (active) {

@@ -87,6 +87,8 @@ const CardList: React.FC<CardListProps> = ({
   const menuItems: Array<{ label: string; action: () => void; disabled?: boolean; icon: string; danger?: boolean; title?: string }> = [
     ...(onOpenAiSettings ? [{ label: 'AI 辨識設定', action: onOpenAiSettings, icon: 'adjustments-horizontal' }] : []),
     { label: '使用說明', action: onShowInstructions, icon: 'question-mark-circle' },
+    { label: '關於名片管家', action: () => { window.open('/about.html', '_blank', 'noopener,noreferrer'); }, icon: 'question-mark-circle' },
+    { label: '隱私與資料使用', action: () => { window.open('/privacy.html', '_blank', 'noopener,noreferrer'); }, icon: 'notes' },
     ...(googleUser ? [
       { label: '在 Sheets 中開啟', action: () => { if (spreadsheetId) window.open(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}`, '_blank', 'noopener,noreferrer'); }, disabled: !spreadsheetId, icon: 'table-cells' },
       { label: '立即同步', action: onForceSync, disabled: syncDisabled || syncStatus === SyncStatus.SYNCING, icon: 'sync' },

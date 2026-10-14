@@ -5,7 +5,9 @@ declare const gapi: any;
 declare const google: any;
 
 const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest', 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'];
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
+// Sheets accepts drive.file for this app's own files; access to every spreadsheet is unnecessary.
+// https://developers.google.com/workspace/sheets/api/scopes
+const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 // Keep the original A:J schema. OCR text is an additive, backwards-compatible column.
 const cardHeaders = ['id', 'name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'timestamp', 'imageDriveId', 'rawText'] as const;
 const sheetRange = `'${CARD_SHEET_NAME.replace(/'/g, "''")}'`;
@@ -96,6 +98,7 @@ export async function initGis(callback: (tokenResponse: any) => void): Promise<v
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
     scope: SCOPES,
+    include_granted_scopes: false,
     callback,
     error_callback: (error: any) => callback({
       error: error.type || 'gis_error',

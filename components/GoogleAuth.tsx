@@ -15,15 +15,18 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ user, syncStatus, isGapiReady, 
   if (!user) {
     const isDisabled = !isGapiReady;
     return (
-      <button
-        onClick={onLogin}
-        disabled={isDisabled}
-        className="w-full flex items-center justify-center gap-2 min-h-11 px-3 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors text-sm disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-wait"
-        title={isDisabled ? "正在連接 Google 服務" : "登入後自動同步至您的 Google Sheets 與 Drive"}
-      >
-        <Icon name="google-logo" className="h-5 w-5" />
-        <span className="font-medium">{isDisabled ? "連接 Google…" : "登入並自動同步"}</span>
-      </button>
+      <div>
+        <button
+          onClick={onLogin}
+          disabled={isDisabled}
+          className="w-full flex items-center justify-center gap-2 min-h-11 px-3 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors text-sm disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-wait"
+          title={isDisabled ? "正在連接 Google 服務" : "登入後自動同步至您的 Google Sheets 與 Drive"}
+        >
+          <Icon name="google-logo" className="h-5 w-5" />
+          <span className="font-medium">{isDisabled ? "連接 Google…" : "登入並自動同步"}</span>
+        </button>
+        <p className="mt-2 text-xs leading-relaxed text-gray-400">登入後會同步名片至您的 Google 帳號。<a href="/privacy.html" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-blue-300 underline underline-offset-2">隱私與資料使用</a></p>
+      </div>
     );
   }
 
