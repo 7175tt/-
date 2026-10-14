@@ -98,7 +98,7 @@ async def main():
             image = payload["base64Image"]
             image_bytes = base64.b64decode(image)
             assert image_bytes[:3] == b"\xff\xd8\xff", "Gallery files must be converted to JPEG"
-            assert len(image_bytes) <= 2 * 1024 * 1024, "Prepared scan should stay within 2 MiB"
+            assert len(image_bytes) <= 3 * 1024 * 1024, "Prepared scan should stay within 3 MiB"
             digest = hashlib.sha256(image_bytes).hexdigest()
             number = image_ids.setdefault(digest, len(image_ids) + 1)
             attempts[number] = attempts.get(number, 0) + 1
@@ -139,7 +139,7 @@ async def main():
 
             images = await page.evaluate("""() => [1, 2, 3, 4].map(number => {
               const canvas = document.createElement('canvas');
-              canvas.width = 2600; canvas.height = 1650;
+              canvas.width = 3600; canvas.height = 2285;
               const ctx = canvas.getContext('2d');
               ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
               ctx.fillStyle = ['#17435b', '#784350', '#236845', '#783a20'][number - 1];
@@ -189,7 +189,7 @@ async def main():
             photo = page.get_by_alt_text("名片原始照片，可對照下方辨識內容", exact=True)
             await expect(photo).to_be_visible()
             await expect(page.get_by_label("姓名", exact=True)).to_have_value("測試聯絡人 1")
-            assert await photo.evaluate("image => image.complete && image.naturalWidth === 2000 && image.naturalHeight > 0")
+            assert await photo.evaluate("image => image.complete && image.naturalWidth === 3200 && image.naturalHeight > 0")
             await page.screenshot(path=str(OUTPUT / "mobile-review.png"))
             await page.get_by_label("姓名", exact=True).fill("已核對聯絡人")
             await page.get_by_label("備註", exact=True).fill("展場認識，下週聯絡")
@@ -214,6 +214,7 @@ async def main():
             await page.get_by_role("button", name="顯示或隱藏搜尋選項", exact=True).click()
             mark("full-text and field-specific searches find text present only in the OCR original")
 
+            await page.get_by_role("button", name="資料管理與設定", exact=True).click()
             await page.get_by_role("button", name="手動新增名片", exact=True).click()
             await expect(page.get_by_role("heading", name="新增名片", exact=True)).to_be_visible()
             await page.get_by_label("姓名", exact=True).fill("手動聯絡人")

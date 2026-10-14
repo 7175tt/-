@@ -83,6 +83,7 @@ def main():
         raise AssertionError(f"Expected committed contacts {names}, got {snapshot}")
 
     def add_card(page, name):
+        page.get_by_role("button", name="資料管理與設定", exact=True).click()
         page.get_by_role("button", name="手動新增名片", exact=True).click()
         page.get_by_label("姓名", exact=True).fill(name)
         page.get_by_role("button", name="建立名片", exact=True).click()
@@ -99,12 +100,12 @@ def main():
         unsupported = None
         try:
             first = page_for(context)
-            expect(first.get_by_role("button", name="手動新增名片", exact=True)).to_be_visible()
+            expect(first.get_by_role("button", name="資料管理與設定", exact=True)).to_be_visible()
             mark("first tab acquires storage ownership under React StrictMode")
 
             second = page_for(context)
             expect(second.get_by_text(BLOCKED, exact=True)).to_be_visible()
-            expect(second.get_by_role("button", name="手動新增名片", exact=True)).to_have_count(0)
+            expect(second.get_by_role("button", name="資料管理與設定", exact=True)).to_have_count(0)
             assert second.evaluate("[window.storageOpens, window.storagePuts]") == [0, 0]
             mark("second tab shows waiting screen without reading or writing IndexedDB")
 
@@ -141,7 +142,7 @@ def main():
             unsupported.add_init_script("Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });")
             unavailable = page_for(unsupported)
             expect(unavailable.get_by_role("alert")).to_contain_text("此瀏覽器無法安全協調名片儲存")
-            expect(unavailable.get_by_role("button", name="手動新增名片", exact=True)).to_have_count(0)
+            expect(unavailable.get_by_role("button", name="資料管理與設定", exact=True)).to_have_count(0)
             assert unavailable.evaluate("[window.storageOpens, window.storagePuts]") == [0, 0]
             mark("unsupported Web Locks explain blocked storage without opening IndexedDB")
 

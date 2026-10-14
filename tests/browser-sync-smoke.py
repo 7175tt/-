@@ -133,6 +133,14 @@ async def wait_snapshot(page, predicate, argument=None):
         await asyncio.sleep(0.05)
     raise AssertionError(f'IndexedDB did not satisfy: {predicate}')
 
+async def tool_action(page, name):
+    action = page.get_by_role('button', name=name, exact=True)
+    if not await action.is_visible():
+        await page.get_by_role('button', name='資料管理與設定', exact=True).click()
+    await expect(action).to_be_enabled()
+    await action.click()
+
+
 async def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     passed, page_errors, blocked = [], [], set()
@@ -171,8 +179,7 @@ async def main():
             await page.goto(BASE_URL, wait_until='domcontentloaded')
             await expect(page.get_by_role('heading', name='未綁定本機', exact=True)).to_be_visible()
             await wait_snapshot(page, 'state => state.cards.length === 1 && !state.cards[0].cloudAccount')
-            await expect(page.get_by_role('button', name='登入並自動同步', exact=True)).to_be_enabled()
-            await page.get_by_role('button', name='登入並自動同步', exact=True).click()
+            await tool_action(page, '登入並自動同步')
             await page.wait_for_function("window.__cloud.rows.a.length === 2")
             snapshot = await wait_snapshot(page, "state => state.cards[0]?.cloudAccount === 'a@example.invalid' && state.cards[0].lastSyncedSheetId === 'a-sheet'")
             writes = await page.evaluate('window.__cloud.writes')
@@ -180,7 +187,7 @@ async def main():
             assert await page.evaluate("localStorage.getItem('KEEPER_GOOGLE_AUTH') === null")
             mark('login durably binds local cards before automatic upload and keeps tokens out of localStorage')
 
-            await expect(page.get_by_text('本機已儲存 · 已與 Google 同步', exact=True)).to_be_visible()
+            await expect(page.get_by_role('status', name='本機已儲存 · 已與 Google 同步', exact=True)).to_be_visible()
             # One follow-up can normalize legacy empty optional fields. Require
             # a sustained idle window rather than assuming the first status is final.
             deadline = time.monotonic() + 12
@@ -196,7 +203,7 @@ async def main():
             mark('unchanged cards settle without a continuous automatic sync loop')
 
             await page.evaluate('window.__cloud.holdNextRead = true')
-            await page.get_by_role('button', name='立即同步', exact=True).click()
+            await tool_action(page, '立即同步')
             await page.wait_for_function('window.__cloud.readHeld')
             await page.get_by_role('button', name='編輯 未綁定本機 的名片', exact=True).click()
             await page.get_by_label('姓名', exact=True).fill('同步期間修改')
@@ -216,14 +223,13 @@ async def main():
             assert snapshot['deletions'][0]['account'] == 'a@example.invalid'
             assert await page.evaluate('window.__cloud.rows.a.length') == 2
             await page.get_by_role('button', name='關閉提示', exact=True).click()
-            await expect(page.get_by_role('button', name='立即同步', exact=True)).to_be_enabled()
-            await page.get_by_role('button', name='立即同步', exact=True).click()
+            await tool_action(page, '立即同步')
             await wait_snapshot(page, 'state => state.cards.length === 0 && state.deletions.length === 0')
             assert await page.evaluate('window.__cloud.rows.a.length') == 1
             mark('failed cloud deletion retains a durable tombstone and retry removes it without resurrection')
 
             # Keep one A-only contact for the account-switch isolation check.
-            await page.get_by_role('button', name='手動新增名片', exact=True).click()
+            await tool_action(page, '手動新增名片')
             await page.get_by_label('姓名', exact=True).fill('帳號 A 私有名片')
             await page.get_by_role('button', name='建立名片', exact=True).click()
             await page.wait_for_function("window.__cloud.rows.a.some(row => row[1] === '帳號 A 私有名片')")
@@ -241,7 +247,7 @@ async def main():
             assert any(c['name'] == '帳號 A 私有名片' and c['cloudAccount'] == 'a@example.invalid' for c in snapshot['cards'])
             mark('account switch with delayed userinfo never uploads or shows the previous account cards')
 
-            await page.get_by_role('button', name='手動新增名片', exact=True).click()
+            await tool_action(page, '手動新增名片')
             await page.get_by_label('姓名', exact=True).fill('帳號 B 私有名片')
             await page.get_by_role('button', name='建立名片', exact=True).click()
             await page.wait_for_function("window.__cloud.rows.b.some(row => row[1] === '帳號 B 私有名片')")
@@ -250,7 +256,7 @@ async def main():
             assert all(w['boundBeforeWrite'] for w in writes)
             assert all(w['name'] != '帳號 A 私有名片' for w in writes if w['account'] == 'b')
             assert all(w['name'] != '帳號 B 私有名片' for w in writes if w['account'] == 'a')
-            await page.get_by_role('button', name='登出', exact=True).click()
+            await tool_action(page, '登出')
             await expect(page.get_by_role('heading', name='帳號 A 私有名片', exact=True)).to_be_visible()
             await expect(page.get_by_role('heading', name='帳號 B 私有名片', exact=True)).to_be_visible()
             assert await page.evaluate("sessionStorage.getItem('KEEPER_GOOGLE_AUTH') === null && window.__cloud.token === null")

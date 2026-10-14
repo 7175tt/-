@@ -18,7 +18,7 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ user, syncStatus, isGapiReady, 
       <button
         onClick={onLogin}
         disabled={isDisabled}
-        className="flex items-center gap-2 px-3 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors text-sm disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-wait"
+        className="w-full flex items-center justify-center gap-2 min-h-11 px-3 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors text-sm disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-wait"
         title={isDisabled ? "正在連接 Google 服務" : "登入後自動同步至您的 Google Sheets 與 Drive"}
       >
         <Icon name="google-logo" className="h-5 w-5" />
@@ -41,21 +41,21 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ user, syncStatus, isGapiReady, 
   }
 
   return (
-    <div className="flex items-center gap-3 bg-gray-800 rounded-full p-1 pr-4">
-      <div className="flex items-center gap-2">
+    <div className="flex items-center justify-between gap-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
         {user.picture ? (
-           <img src={user.picture} alt={user.name} className="h-8 w-8 rounded-full" />
+           <img src={user.picture} alt={user.name} className="h-8 w-8 rounded-full shrink-0" />
         ) : (
-          <span className="h-8 w-8 rounded-full bg-gray-600 flex items-center justify-center">
+          <span className="h-8 w-8 rounded-full bg-gray-600 flex items-center justify-center shrink-0">
              <Icon name="user" className="h-5 w-5 text-gray-400" />
           </span>
         )}
-        <span className="text-sm font-medium text-white truncate hidden sm:inline">{user.name}</span>
-        <div title={syncStatus}>{getSyncIndicator()}</div>
+        <div className="min-w-0"><p className="text-sm font-medium text-white truncate">{user.name}</p><p className="text-xs text-gray-400 truncate" title={user.email}>{user.email}</p></div>
+        <div className="shrink-0" title={syncStatus}>{getSyncIndicator()}</div>
       </div>
       <button
         onClick={onLogout}
-        className="text-gray-400 hover:text-white transition-colors"
+        className="flex items-center justify-center min-h-11 min-w-11 shrink-0 rounded-lg text-gray-400 hover:bg-gray-700 hover:text-white transition-colors"
         aria-label="登出"
         title="登出並切換回本機儲存"
       >

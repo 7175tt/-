@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import Icon from './Icon';
-import { getObjectCoverCrop, imageFileToJpegBase64, imageToJpegBase64 } from '../utils/cardImage';
+import { createStillCamera, getContainedImageRect, getObjectCoverCrop, imageBlobToJpegBase64, imageFileToJpegBase64, imageToJpegBase64, isStillCameraUnsupported, takeHighResolutionPhoto, type StillCamera } from '../utils/cardImage';
 
 interface CardScannerProps {
   onCaptureAndProcess: (base64Image: string) => void;
@@ -11,8 +11,8 @@ interface CardScannerProps {
   onManualEntry?: () => void;
 }
 
-type CameraCapabilities = MediaTrackCapabilities & { torch?: boolean; focusMode?: string[] };
-type CameraConstraint = MediaTrackConstraintSet & { torch?: boolean; focusMode?: string };
+type CameraCapabilities = MediaTrackCapabilities & { torch?: boolean; focusMode?: string[]; exposureMode?: string[] };
+type CameraConstraint = MediaTrackConstraintSet & { torch?: boolean; focusMode?: string; exposureMode?: string };
 
 function cameraErrorMessage(error: unknown) {
   const name = error instanceof Error ? error.name : '';
@@ -29,10 +29,15 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
   const galleryRef = useRef<HTMLInputElement>(null);
   const nativeCameraRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const stillCameraRef = useRef<StillCamera | null>(null);
   const mountedRef = useRef(false);
   const cameraRequestRef = useRef(0);
+  const captureTokenRef = useRef(0);
+  const captureInFlightRef = useRef(false);
   const busyRef = useRef(false);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initiallySettledRef = useRef(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
@@ -43,9 +48,20 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
   const [uploadProgress, setUploadProgress] = useState('');
   const [sessionCount, setSessionCount] = useState(0);
   const [guideWidth, setGuideWidth] = useState(280);
+  const [captureMode, setCaptureMode] = useState<'photo' | 'video' | null>(null);
 
   const stopCamera = useCallback(() => {
     cameraRequestRef.current++;
+    captureTokenRef.current++;
+    stillCameraRef.current = null;
+    initiallySettledRef.current = false;
+    if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    if (captureInFlightRef.current) {
+      captureInFlightRef.current = false;
+      busyRef.current = false;
+      if (mountedRef.current) { setIsBusy(false); setIsFlashing(false); setUploadProgress(''); }
+    }
     streamRef.current?.getTracks().forEach(track => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -53,6 +69,7 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
       setIsReady(false);
       setIsTorchOn(false);
       setIsTorchSupported(false);
+      setCaptureMode(null);
     }
   }, []);
 
@@ -67,7 +84,7 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } },
       });
       if (!mountedRef.current || request !== cameraRequestRef.current) {
         stream.getTracks().forEach(track => track.stop());
@@ -89,11 +106,21 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
       let capabilities: CameraCapabilities = {};
       try { capabilities = track?.getCapabilities?.() || {}; } catch { /* Optional camera controls. */ }
       setIsTorchSupported(!!capabilities.torch);
-      if (capabilities.focusMode?.includes('continuous')) {
-        const constraints: CameraConstraint = { focusMode: 'continuous' };
-        // Focus support varies by phone; it must never prevent capture.
-        void track.applyConstraints({ advanced: [constraints] }).catch(() => {});
-      }
+      const controls: CameraConstraint = {
+        ...(capabilities.focusMode?.includes('continuous') ? { focusMode: 'continuous' } : {}),
+        ...(capabilities.exposureMode?.includes('continuous') ? { exposureMode: 'continuous' } : {}),
+      };
+      if (Object.keys(controls).length) void track.applyConstraints({ advanced: [controls] }).catch(() => {});
+      if (!mountedRef.current || request !== cameraRequestRef.current) return;
+      stillCameraRef.current = createStillCamera(track);
+      setCaptureMode(stillCameraRef.current ? 'photo' : 'video');
+      // Let the initial exposure/focus settle once; subsequent photos stay quick.
+      readyTimerRef.current = setTimeout(() => {
+        if (mountedRef.current && request === cameraRequestRef.current) {
+          initiallySettledRef.current = true;
+          setIsReady(video.readyState >= 2 && video.videoWidth > 0);
+        }
+      }, 300);
     } catch (error) {
       if (mountedRef.current && request === cameraRequestRef.current) {
         stopCamera();
@@ -128,11 +155,18 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
   useEffect(() => {
     const preview = previewRef.current;
     if (!preview) return;
-    const resizeGuide = () => setGuideWidth(Math.max(1, Math.min(preview.clientWidth * 0.88, preview.clientHeight * 0.8 * 85 / 54, 640)));
+    const video = videoRef.current;
+    const resizeGuide = () => {
+      if (!preview.clientWidth || !preview.clientHeight) return;
+      const frame = getContainedImageRect(video?.videoWidth || 16, video?.videoHeight || 9, preview.getBoundingClientRect());
+      setGuideWidth(Math.max(1, Math.min(frame.width * 0.9, frame.height * 0.9 * 85 / 54, 640)));
+    };
     resizeGuide();
     const observer = new ResizeObserver(resizeGuide);
     observer.observe(preview);
-    return () => observer.disconnect();
+    video?.addEventListener('resize', resizeGuide);
+    video?.addEventListener('loadedmetadata', resizeGuide);
+    return () => { observer.disconnect(); video?.removeEventListener('resize', resizeGuide); video?.removeEventListener('loadedmetadata', resizeGuide); };
   }, []);
 
   const toggleTorch = async () => {
@@ -147,27 +181,65 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
     }
   };
 
-  const handleCapture = () => {
+  const handleCapture = async () => {
     const video = videoRef.current;
     const guide = guideRef.current;
     if (busyRef.current || !isReady || !video || !guide || video.readyState < 2 || !video.videoWidth) return;
     busyRef.current = true;
+    captureInFlightRef.current = true;
+    const token = ++captureTokenRef.current;
+    const request = cameraRequestRef.current;
+    const isCurrent = () => mountedRef.current && token === captureTokenRef.current && request === cameraRequestRef.current;
+    let saved = false;
     setIsBusy(true);
     setUploadError(null);
     try {
-      // Capture the displayed video frame. A still photo can have a different field of view.
-      const crop = getObjectCoverCrop(video.videoWidth, video.videoHeight, video.getBoundingClientRect(), guide.getBoundingClientRect());
-      onCaptureAndProcess(imageToJpegBase64(video, crop));
+      let image: string | undefined;
+      const stillCamera = stillCameraRef.current;
+      if (stillCamera) {
+        setUploadProgress('正在拍攝高畫質照片，請保持穩定…');
+        try {
+          const photo = await takeHighResolutionPhoto(stillCamera, isCurrent);
+          if (!isCurrent()) return;
+          // The photo sensor may use a different field of view from the video.
+          // Preserve its full frame instead of guessing which pixels to remove.
+          image = await imageBlobToJpegBase64(photo);
+          if (!isCurrent()) return;
+        } catch (error) {
+          if (!isCurrent()) return;
+          if (!isStillCameraUnsupported(error)) throw new Error('高畫質拍攝未成功，請保持手機穩定後重試，或使用「手機相機」。');
+          stillCameraRef.current = null;
+          setCaptureMode('video');
+          setUploadError('此瀏覽器不支援高畫質拍照，這次使用預覽畫面。若細字不清楚，請改用「手機相機」。');
+        }
+      }
+      if (!image) {
+        if (video.readyState < 2 || !video.videoWidth) throw new Error('相機畫面已暫停，請重新開啟相機。');
+        const frame = getContainedImageRect(video.videoWidth, video.videoHeight, video.getBoundingClientRect());
+        const crop = getObjectCoverCrop(video.videoWidth, video.videoHeight, frame, guide.getBoundingClientRect());
+        image = imageToJpegBase64(video, crop, 2560);
+      }
+      if (!isCurrent()) return;
+      onCaptureAndProcess(image);
+      saved = true;
       setSessionCount(count => count + 1);
+      setUploadProgress('');
       setIsFlashing(true);
       flashTimerRef.current = setTimeout(() => {
+        if (!isCurrent()) return;
+        captureInFlightRef.current = false;
         busyRef.current = false;
         if (mountedRef.current) { setIsFlashing(false); setIsBusy(false); }
       }, 450);
     } catch (error) {
-      busyRef.current = false;
-      setIsBusy(false);
-      setUploadError(error instanceof Error ? error.message : '拍攝失敗，請再試一次。');
+      if (isCurrent()) setUploadError(error instanceof Error ? error.message : '拍攝失敗，請再試一次。');
+    } finally {
+      if (!saved && isCurrent()) {
+        busyRef.current = false;
+        captureInFlightRef.current = false;
+        setIsBusy(false);
+        setUploadProgress('');
+      }
     }
   };
 
@@ -210,7 +282,10 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
       </header>
 
       <div ref={previewRef} className="relative flex-1 min-h-24 overflow-hidden bg-black flex items-center justify-center">
-        <video ref={videoRef} autoPlay muted playsInline onCanPlay={() => setIsReady(!!videoRef.current?.videoWidth)} className="absolute inset-0 w-full h-full object-cover" aria-label="即時相機預覽" />
+        <video ref={videoRef} autoPlay muted playsInline onCanPlay={() => {
+          const video = videoRef.current;
+          if (initiallySettledRef.current && streamRef.current && video) setIsReady(video.readyState >= 2 && video.videoWidth > 0);
+        }} onWaiting={() => setIsReady(false)} className="absolute inset-0 w-full h-full object-contain" aria-label="即時相機預覽" />
         {!cameraError && <div ref={guideRef} className="relative rounded-2xl border-2 border-white/90 pointer-events-none" style={{ width: guideWidth, aspectRatio: '85 / 54', boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)' }} />}
         {!isReady && !cameraError && <p role="status" className="absolute rounded-xl bg-black/70 px-4 py-3">正在開啟相機…</p>}
         {cameraError && <div className="relative max-w-sm px-6 py-5 text-center"><Icon name="camera" className="mx-auto h-10 w-10 text-gray-400 mb-3" /><p role="status" className="text-sm leading-relaxed">{cameraError}</p><button type="button" onClick={() => void startCamera()} className="mt-4 min-h-11 rounded-xl bg-gray-800 px-5 text-sm">重新開啟相機</button></div>}
@@ -218,7 +293,8 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
       </div>
 
       <footer className="shrink-0 px-4 pt-3 bg-gray-950" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
-        <p className="text-center text-sm text-gray-300">{cameraError ? '每張照片放一張名片，文字越清楚越容易辨識' : '將名片完整對準框線，避開反光，可連續拍攝'}</p>
+        <p className="text-center text-sm text-gray-300">{cameraError ? '每張照片放一張名片，文字越清楚越容易辨識' : captureMode === 'photo' ? '名片盡量填滿框線；照片會保留周圍畫面' : '名片盡量填滿框線；細字可改用「手機相機」'}</p>
+        {captureMode && <p className="text-center text-xs text-gray-400 mt-1">{captureMode === 'photo' ? '高畫質拍照 · 請保持穩定，避開反光' : '預覽畫面拍照 · 手機相機可保留更多細節'}</p>}
         <p role="status" aria-live="polite" className="min-h-6 mt-1 text-center text-xs text-blue-300">{uploadProgress || (pendingCount > 0 ? `${pendingCount} 張正在辨識，可以繼續拍攝` : total > 0 ? `已加入 ${total} 張，按「完成」核對內容` : '也可以從相簿一次選擇多張照片')}</p>
         {uploadError && <p role="alert" className="mx-auto max-w-xl max-h-20 overflow-y-auto rounded-lg bg-red-950 px-3 py-2 mb-2 text-sm text-red-200">{uploadError}</p>}
         <div className="mx-auto max-w-md flex items-center justify-between gap-3 py-2">

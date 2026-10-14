@@ -370,12 +370,18 @@ export default function App() {
   }, [update]);
 
   const statusText = storageError ? '尚未保存 · 請保留頁面並重試或下載備份'
-    : !online ? '目前離線 · 變更保留本機，連線後自動同步'
     : saving ? '正在保存到這個裝置…'
+    : !online ? '目前離線 · 變更保留本機，連線後自動同步'
     : googleUser ? syncStatus === SyncStatus.SYNCING ? '正在同步到您的 Google 雲端…'
       : syncStatus === SyncStatus.ERROR ? '雲端同步待重試 · 本機資料保留'
       : syncStatus === SyncStatus.SYNCED ? '本機已儲存 · 已與 Google 同步' : '本機已儲存 · 等待自動同步'
     : '本機已儲存 · 登入 Google 後自動同步';
+  const statusLabel = storageError ? '尚未保存' : saving ? '保存中…'
+    : !online ? '目前離線' : googleUser ? syncStatus === SyncStatus.SYNCING ? '同步中…'
+      : syncStatus === SyncStatus.ERROR ? '同步待重試' : syncStatus === SyncStatus.SYNCED ? '已同步' : '等待同步'
+    : '已存本機';
+  const statusTone = storageError ? 'error' : saving ? 'busy' : !online || syncStatus === SyncStatus.ERROR ? 'warning'
+    : syncStatus === SyncStatus.SYNCING ? 'busy' : 'normal';
 
   return (
     <div className="h-dvh min-h-0 w-full bg-gray-900 text-white flex flex-col overflow-hidden">
@@ -385,13 +391,18 @@ export default function App() {
       </div>}
       {ready && storageError && <div role="alert" className="z-[70] bg-red-950 p-3 text-sm">{storageError} <button className="underline" onClick={retrySave}>重試保存</button> <button className="underline ml-3" onClick={() => void backup()}>先下載備份</button></div>}
       {!ready ? <main className="flex-1 grid place-items-center p-6 text-center" role={storageError ? 'alert' : 'status'}><p className="max-w-sm text-gray-200">{storageError || (blocked ? '名片管家已在另一個分頁開啟。請關閉另一個分頁，此頁會自動接續。' : '正在讀取名片…')}</p></main> : <>
-        <div className="shrink-0 px-4 py-2 text-xs bg-gray-950 text-gray-300 flex items-center justify-between gap-2" role="status">
+        {view !== AppView.LIST && <div className="shrink-0 px-4 py-2 text-xs bg-gray-950 text-gray-300 flex items-center justify-between gap-2" role="status">
           <span>{statusText}</span>
           {googleUser && <div className="flex gap-3">
             {syncStatus === SyncStatus.ERROR && gapiReady && <button onClick={login} className="text-blue-300 whitespace-nowrap">重新登入</button>}
             <button onClick={() => void sync(true)} disabled={!online || saving || syncStatus === SyncStatus.SYNCING} className="text-blue-300 whitespace-nowrap disabled:opacity-50">立即同步</button>
           </div>}
-        </div>
+        </div>}
+        {view === AppView.LIST && googleUser && syncStatus === SyncStatus.ERROR && <div role="alert" className="shrink-0 px-3 py-2 text-xs bg-amber-950/40 text-amber-200 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>雲端同步未完成，本機資料保留。</span>
+          <button onClick={() => void sync(true)} disabled={!online || saving} className="min-h-11 underline disabled:opacity-50">重試同步</button>
+          {gapiReady && <button onClick={login} className="min-h-11 underline">重新登入</button>}
+        </div>}
         {googleError && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">{googleError} <button className="underline ml-2" onClick={() => setGoogleAttempt(n => n + 1)}>重新連線 Google</button></div>}
         {scanReady === false && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">AI 掃描尚未啟用；可以先拍照留存或手動輸入名片。</div>}
         <input type="file" ref={excelInput} onChange={importExcel} className="hidden" accept=".xlsx,.xls" />
@@ -402,7 +413,8 @@ export default function App() {
             : <CardList cards={cards} onScanNew={() => { setCapturedCount(0); setView(AppView.SCANNING); }} onAddManual={addManual} onRetryCard={retry} onDeleteCard={id => setDeleteTarget(cards.find(c => c.id === id) || null)} onEditCard={edit}
                 onExportExcel={() => void fileService.exportToExcel(cards).catch(error => notify('error', `Excel 匯出未完成：${errorText(error)}`))} onImportExcel={() => excelInput.current?.click()} onExportJson={() => void backup()} onRestoreJson={() => jsonInput.current?.click()}
                 onClearAll={() => setClearConfirm(true)} onShowInstructions={() => setShowInstructions(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={gapiReady} onGoogleLogin={login} onGoogleLogout={logout}
-                onForceSync={() => void sync(true)} spreadsheetId={spreadsheetId} onLazyImageLoaded={cacheImage} canLoadCloudImages={!!googleUser} />}
+                onForceSync={() => void sync(true)} spreadsheetId={spreadsheetId} onLazyImageLoaded={cacheImage} canLoadCloudImages={!!googleUser}
+                statusLabel={statusLabel} statusDescription={statusText} statusTone={statusTone} syncDisabled={!online || saving} />}
         </main>
       </>}
       <ConfirmationDialog isOpen={!!deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={() => deleteTarget && remove([deleteTarget])} title="刪除這張名片？" message="這會刪除本機名片；若有雲端副本，也會在同步時刪除。" confirmButtonText="確定刪除" />
