@@ -1,0 +1,11 @@
+{
+  "name": "名片管家 (Business Card Keeper)",
+  "description": "一個智慧名片儲存系統，可使用相機掃描名片，透過 AI 自動辨識並整理資訊，方便您儲存與查找聯絡人。",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "prompt": "",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
