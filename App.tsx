@@ -1,7 +1,8 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useSyncExternalStore } from 'react';
 import { BusinessCard, AppView, GoogleUser, SyncStatus } from './types';
 import { useCardStore } from './hooks/useCardStore';
 import { scanBusinessCard, getScanReadiness } from './services/geminiService';
+import { getGeminiKeySettings, subscribeGeminiKeySettings } from './services/geminiKeySettings';
 import { applySyncResult, belongsToAccount, synchronizeCards } from './services/syncService';
 import * as GoogleApiService from './services/googleApiService';
 import * as fileService from './services/fileService';
@@ -10,6 +11,7 @@ import CardScanner from './components/CardScanner';
 import CardForm from './components/CardForm';
 import ConfirmationDialog from './components/ConfirmationDialog';
 import InstructionsModal from './components/InstructionsModal';
+import GeminiKeySettings from './components/GeminiKeySettings';
 import { GOOGLE_CLIENT_ID } from './config';
 
 declare const gapi: any;
@@ -20,6 +22,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : '
 
 export default function App() {
   const { state, update, ready, saving, blocked, error: storageError, retrySave } = useCardStore();
+  const aiSettings = useSyncExternalStore(subscribeGeminiKeySettings, getGeminiKeySettings, getGeminiKeySettings);
   const stateRef = useRef(state);
   stateRef.current = state;
   const [view, setView] = useState(AppView.LIST);
@@ -27,6 +30,7 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
+  const [showAiSettings, setShowAiSettings] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const [restoreCards, setRestoreCards] = useState<BusinessCard[] | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BusinessCard | null>(null);
@@ -45,11 +49,13 @@ export default function App() {
   const syncing = useRef(false);
   const syncRequested = useRef(false);
   const scans = useRef(new Map<string, AbortController>());
+  const scanKeyRef = useRef(aiSettings.apiKey);
   const excelInput = useRef<HTMLInputElement>(null);
   const jsonInput = useRef<HTMLInputElement>(null);
   const userRef = useRef(googleUser);
   userRef.current = googleUser;
   const cards = googleUser ? state.cards.filter(c => belongsToAccount(c, googleUser.email)) : state.cards;
+  const canScan = !!aiSettings.apiKey || scanReady === true;
   const notify = useCallback((type: 'error' | 'success', message: string) => setNotice({ type, message }), []);
 
   useEffect(() => {
@@ -221,6 +227,17 @@ export default function App() {
 
   useEffect(() => {
     if (!ready) return;
+    if (scanKeyRef.current !== aiSettings.apiKey) {
+      scanKeyRef.current = aiSettings.apiKey;
+      scans.current.forEach(controller => controller.abort());
+      update(current => current.cards.some(card => card.isProcessing) ? {
+        ...current, cards: current.cards.map(card => card.isProcessing ? {
+          ...card, isProcessing: false, isError: true,
+          errorMessage: 'AI 辨識設定已變更，照片已保留。請點選重新辨識以使用目前設定。',
+        } : card),
+      } : current);
+      return;
+    }
     // A small queue allows continuous capture without unbounded AI requests.
     const candidates = state.cards.filter(c => c.isProcessing && !scans.current.has(c.id));
     for (const card of candidates.slice(0, Math.max(0, 2 - scans.current.size))) {
@@ -229,7 +246,7 @@ export default function App() {
       (async () => {
         try {
           if (!online) throw new Error('目前離線，照片已保存。連線後請點選重新辨識。');
-          if (scanReady === false) throw new Error('AI 掃描尚未啟用，照片已保存。您可以先手動輸入。');
+          if (!canScan) throw new Error('請先在「工具 → AI 辨識設定」輸入個人 API key，再重新辨識。照片已保存，也可先手動填寫。');
           if (!card.imageBase64) throw new Error('找不到名片照片，請重新拍攝。');
           const data = await scanBusinessCard(card.imageBase64, controller.signal);
           if (controller.signal.aborted) return;
@@ -247,7 +264,7 @@ export default function App() {
         }
       })();
     }
-  }, [state.cards, ready, online, scanReady, update, queueTick]);
+  }, [state.cards, ready, online, canScan, aiSettings.apiKey, update, queueTick]);
 
   useEffect(() => () => { scans.current.forEach(controller => controller.abort()); scans.current.clear(); }, []);
   useEffect(() => {
@@ -404,7 +421,7 @@ export default function App() {
           {gapiReady && <button onClick={login} className="min-h-11 underline">重新登入</button>}
         </div>}
         {googleError && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">{googleError} <button className="underline ml-2" onClick={() => setGoogleAttempt(n => n + 1)}>重新連線 Google</button></div>}
-        {scanReady === false && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">AI 掃描尚未啟用；可以先拍照留存或手動輸入名片。</div>}
+        {!canScan && <div className="shrink-0 px-3 py-1 text-xs text-amber-200 bg-amber-950/40 flex items-center justify-between gap-2"><span>設定個人 API key，即可使用 AI 辨識。</span><button onClick={() => setShowAiSettings(true)} className="min-h-11 shrink-0 px-2 underline">設定金鑰</button></div>}
         <input type="file" ref={excelInput} onChange={importExcel} className="hidden" accept=".xlsx,.xls" />
         <input type="file" ref={jsonInput} onChange={restore} className="hidden" accept=".json" />
         <main className="flex-1 min-h-0">
@@ -412,7 +429,7 @@ export default function App() {
             : view === AppView.EDITING && editing ? <CardForm cardData={editing} onSave={saveCard} onCancel={() => setView(AppView.LIST)} isConfigError={false} mode={creating ? 'create' : editing.needsReview || editing.isError ? 'review' : 'edit'} />
             : <CardList cards={cards} onScanNew={() => { setCapturedCount(0); setView(AppView.SCANNING); }} onAddManual={addManual} onRetryCard={retry} onDeleteCard={id => setDeleteTarget(cards.find(c => c.id === id) || null)} onEditCard={edit}
                 onExportExcel={() => void fileService.exportToExcel(cards).catch(error => notify('error', `Excel 匯出未完成：${errorText(error)}`))} onImportExcel={() => excelInput.current?.click()} onExportJson={() => void backup()} onRestoreJson={() => jsonInput.current?.click()}
-                onClearAll={() => setClearConfirm(true)} onShowInstructions={() => setShowInstructions(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={gapiReady} onGoogleLogin={login} onGoogleLogout={logout}
+                onClearAll={() => setClearConfirm(true)} onShowInstructions={() => setShowInstructions(true)} onOpenAiSettings={() => setShowAiSettings(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={gapiReady} onGoogleLogin={login} onGoogleLogout={logout}
                 onForceSync={() => void sync(true)} spreadsheetId={spreadsheetId} onLazyImageLoaded={cacheImage} canLoadCloudImages={!!googleUser}
                 statusLabel={statusLabel} statusDescription={statusText} statusTone={statusTone} syncDisabled={!online || saving} />}
         </main>
@@ -421,6 +438,7 @@ export default function App() {
       <ConfirmationDialog isOpen={clearConfirm} onCancel={() => setClearConfirm(false)} onConfirm={() => remove(cards)} title="刪除所有顯示的名片？" message="此操作無法復原。建議先建立完整備份，雲端刪除會在連線後同步。" confirmButtonText="確定刪除" />
       <ConfirmationDialog isOpen={restoreCards !== null} onCancel={() => setRestoreCards(null)} onConfirm={() => { if (restoreCards) importCards(restoreCards); setRestoreCards(null); }} title="合併備份中的名片" message="保留目前的名片，只加入編號尚未存在的資料。備份中的雲端連結不會跨帳號使用。" confirmButtonText="確定還原" />
       {showInstructions && <InstructionsModal onClose={() => setShowInstructions(false)} />}
+      {showAiSettings && <GeminiKeySettings onClose={() => setShowAiSettings(false)} sharedKeyAvailable={scanReady === true} />}
     </div>
   );
 }

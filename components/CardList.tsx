@@ -20,6 +20,7 @@ interface CardListProps {
   onRestoreJson: () => void;
   onClearAll: () => void;
   onShowInstructions: () => void;
+  onOpenAiSettings?: () => void;
   googleUser: GoogleUser | null;
   syncStatus: SyncStatus;
   isGapiReady: boolean;
@@ -42,7 +43,7 @@ const categoryLabels: Record<string, string> = {
 
 const CardList: React.FC<CardListProps> = ({
   cards, onScanNew, onAddManual, onRetryCard, onDeleteCard, onEditCard, onExportExcel,
-  onImportExcel, onExportJson, onRestoreJson, onClearAll, onShowInstructions,
+  onImportExcel, onExportJson, onRestoreJson, onClearAll, onShowInstructions, onOpenAiSettings,
   googleUser, syncStatus, isGapiReady, onGoogleLogin, onGoogleLogout, onForceSync,
   spreadsheetId, onLazyImageLoaded, canLoadCloudImages = false,
   statusLabel, statusDescription, statusTone = 'normal', syncDisabled = false,
@@ -84,6 +85,7 @@ const CardList: React.FC<CardListProps> = ({
   const pendingCount = cards.filter(card => card.needsReview && !card.isProcessing && !card.isError).length;
 
   const menuItems: Array<{ label: string; action: () => void; disabled?: boolean; icon: string; danger?: boolean; title?: string }> = [
+    ...(onOpenAiSettings ? [{ label: 'AI 辨識設定', action: onOpenAiSettings, icon: 'adjustments-horizontal' }] : []),
     { label: '使用說明', action: onShowInstructions, icon: 'question-mark-circle' },
     ...(googleUser ? [
       { label: '在 Sheets 中開啟', action: () => { if (spreadsheetId) window.open(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}`, '_blank', 'noopener,noreferrer'); }, disabled: !spreadsheetId, icon: 'table-cells' },

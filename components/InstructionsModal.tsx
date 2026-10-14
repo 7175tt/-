@@ -31,6 +31,8 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
 
           <InstructionSection icon="camera" title="掃描名片">
             <ul className="list-disc list-inside space-y-2 text-gray-400">
+              <li>首次使用請到「工具 → AI 辨識設定」填入自己的 Gemini API key，可先測試再儲存。辨識使用該金鑰所屬專案的額度，與 Google 同步登入分開。</li>
+              <li>金鑰預設只保留於目前分頁，也可選擇在此裝置記住；可隨時在設定中清除。金鑰不會加入名片備份或雲端同步。</li>
               <li>點擊主畫面的 <span className="font-semibold text-blue-400">「掃描」</span> 按鈕。</li>
               <li>將名片完整對準畫面中的 <span className="font-semibold text-yellow-400">提示框線</span>。</li>
               <li>等文字對焦清楚，再點圓形拍照鈕。支援時會拍攝高解析度照片並保留完整畫面，框線用來協助對準名片。</li>
