@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, useSyncExternalStore } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { BusinessCard, AppView, GoogleUser, SyncStatus } from './types';
 import { useCardStore } from './hooks/useCardStore';
 import { scanBusinessCard, getScanReadiness } from './services/geminiService';
@@ -12,6 +12,12 @@ import CardForm from './components/CardForm';
 import ConfirmationDialog from './components/ConfirmationDialog';
 import InstructionsModal from './components/InstructionsModal';
 import GeminiKeySettings from './components/GeminiKeySettings';
+import ContactWorkspace from './components/ContactWorkspace';
+import EventMode, { type CaptureContext } from './components/EventMode';
+import FollowUpBoard from './components/FollowUpBoard';
+import DuplicateReview from './components/DuplicateReview';
+import { mergeSources, readContactMetadata, uniqueLabels, visibleContacts } from './services/contactMetadata';
+import { findDuplicatePairs, mergeContacts, type DuplicatePair, type MergeChoices } from './services/contactDuplicates';
 import { GOOGLE_CLIENT_ID } from './config';
 
 declare const gapi: any;
@@ -33,6 +39,11 @@ export default function App() {
   const [notice, setNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
   const [showAiSettings, setShowAiSettings] = useState(false);
+  const [showEventMode, setShowEventMode] = useState(false);
+  const [showFollowUps, setShowFollowUps] = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [contactId, setContactId] = useState<string | null>(null);
+  const [captureContext, setCaptureContext] = useState<CaptureContext>({ tags: [], events: [] });
   const [clearConfirm, setClearConfirm] = useState(false);
   const [restoreCards, setRestoreCards] = useState<BusinessCard[] | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BusinessCard | null>(null);
@@ -56,7 +67,11 @@ export default function App() {
   const jsonInput = useRef<HTMLInputElement>(null);
   const userRef = useRef(googleUser);
   userRef.current = googleUser;
-  const cards = googleUser ? state.cards.filter(c => belongsToAccount(c, googleUser.email)) : state.cards;
+  const accountCards = useMemo(() => googleUser ? state.cards.filter(c => belongsToAccount(c, googleUser.email)) : state.cards, [state.cards, googleUser]);
+  const cards = useMemo(() => visibleContacts(accountCards), [accountCards]);
+  const duplicateCount = useMemo(() => findDuplicatePairs(cards).length, [cards]);
+  const knownEvents = useMemo(() => uniqueLabels(cards.flatMap(card => card.events || [])).sort(), [cards]);
+  const contact = cards.find(card => card.id === contactId);
   const canScan = !!aiSettings.apiKey || scanReady === true;
   const notify = useCallback((type: 'error' | 'success', message: string) => setNotice({ type, message }), []);
 
@@ -277,15 +292,15 @@ export default function App() {
   }, [ready, saving, storageError, state.cards]);
 
   const capture = useCallback((imageBase64: string) => {
-    const card = { ...blankCard(), imageBase64, isProcessing: true, cloudAccount: userRef.current?.email };
+    const card = { ...blankCard(), ...captureContext, imageBase64, isProcessing: true, cloudAccount: userRef.current?.email };
     update(current => ({ ...current, cards: [card, ...current.cards] }));
     setCapturedCount(count => count + 1);
-  }, [update]);
+  }, [update, captureContext]);
   const retry = (card: BusinessCard) => {
     update(current => ({ ...current, cards: current.cards.map(c => c.id === card.id ? { ...c, isProcessing: true, isError: false, errorMessage: undefined } : c) }));
   };
   const addManual = () => {
-    setEditing({ ...blankCard(), cloudAccount: googleUser?.email });
+    setEditing({ ...blankCard(), ...captureContext, cloudAccount: googleUser?.email });
     setCreating(true);
     setView(AppView.EDITING);
   };
@@ -295,9 +310,11 @@ export default function App() {
     setView(AppView.EDITING);
   };
   const saveCard = (card: BusinessCard) => {
+    readContactMetadata(card);
     scans.current.get(card.id)?.abort();
     update(current => {
       const existing = current.cards.find(c => c.id === card.id);
+      if (existing && editing && existing.timestamp !== editing.timestamp) throw new Error('名片已從雲端更新，請返回列表重新開啟，避免覆蓋最新資料。');
       const photoChanged = card.imageBase64 !== editing?.imageBase64 || card.imageDriveId !== editing?.imageDriveId;
       const saved = {
         ...card, cloudAccount: existing?.cloudAccount || card.cloudAccount,
@@ -315,6 +332,7 @@ export default function App() {
     notify('success', '名片已更新。');
   };
   const remove = (targets: BusinessCard[]) => {
+    targets = [...new Map(targets.flatMap(card => [card, ...mergeSources(stateRef.current.cards, card.id)]).map(card => [card.id, card])).values()];
     const ids = new Set(targets.map(c => c.id));
     for (const id of ids) scans.current.get(id)?.abort();
     update(current => ({
@@ -330,6 +348,8 @@ export default function App() {
     notify('success', '名片已刪除；有雲端副本時會自動同步刪除。');
   };
   const logout = () => {
+    setCaptureContext({ tags: [], events: [] });
+    setContactId(null); setShowDuplicates(false); setShowFollowUps(false); setShowEventMode(false);
     generation.current++;
     userRef.current = null;
     GoogleApiService.signOut();
@@ -375,7 +395,7 @@ export default function App() {
   const backup = async () => {
     try {
       const complete = [];
-      for (const card of cards) {
+      for (const card of accountCards) {
         if (card.imageDriveId && !card.imageBase64) {
           if (!googleUser || card.cloudAccount !== googleUser.email) throw new Error('部分照片只在雲端，請登入對應的 Google 帳號後建立完整備份。');
           complete.push({ ...card, imageBase64: await GoogleApiService.getImageAsBase64(card.imageDriveId) });
@@ -387,6 +407,29 @@ export default function App() {
   const cacheImage = useCallback((id: string, base64: string) => {
     update(current => ({ ...current, cards: current.cards.map(c => c.id === id && !c.imageBase64 ? { ...c, imageBase64: base64 } : c) }));
   }, [update]);
+
+  const changeContact = (id: string, mutation: (current: BusinessCard) => BusinessCard) => {
+    update(current => {
+      const card = current.cards.find(item => item.id === id);
+      if (!card || (userRef.current && !belongsToAccount(card, userRef.current.email))) throw new Error('名片已變更，請重新開啟。');
+      const changed = mutation(card);
+      const next = { ...changed, ...readContactMetadata(changed), timestamp: nextTime(card.timestamp) };
+      return { ...current, cards: current.cards.map(item => item.id === id ? next : item) };
+    });
+  };
+  const loadContactImage = async (card: BusinessCard) => {
+    if (card.imageBase64) return card.imageBase64;
+    if (!card.imageDriveId) return undefined;
+    if (!userRef.current || card.cloudAccount !== userRef.current.email) throw new Error('請登入這張名片所屬的 Google 帳號，才能讀取原始照片。');
+    return GoogleApiService.getImageAsBase64(card.imageDriveId);
+  };
+  const merge = async (pair: DuplicatePair, choices: MergeChoices, photo: 'left' | 'right') => {
+    const account = userRef.current?.email;
+    const image = await loadContactImage(pair[photo]);
+    if (userRef.current?.email !== account) throw new Error('登入帳號已變更，請重新比較。');
+    update(current => mergeContacts(current, pair.left, pair.right, choices, image).state);
+    notify('success', '合併完成。兩張原始名片保留在合併結果的「跟進與紀錄」內。');
+  };
 
   const statusText = storageError ? '尚未保存 · 請保留頁面並重試或下載備份'
     : saving ? '正在保存到這個裝置…'
@@ -427,18 +470,28 @@ export default function App() {
         <input type="file" ref={excelInput} onChange={importExcel} className="hidden" accept=".xlsx,.xls" />
         <input type="file" ref={jsonInput} onChange={restore} className="hidden" accept=".json" />
         <main className="flex-1 min-h-0">
-          {view === AppView.SCANNING ? <CardScanner onCaptureAndProcess={capture} onFinish={() => setView(AppView.LIST)} isConfigError={false} pendingCount={state.cards.filter(c => c.isProcessing).length} capturedCount={capturedCount} onManualEntry={addManual} />
+          {view === AppView.SCANNING ? <CardScanner activityLabel={captureContext.events.join("、")} onCaptureAndProcess={capture} onFinish={() => setView(AppView.LIST)} isConfigError={false} pendingCount={state.cards.filter(c => c.isProcessing).length} capturedCount={capturedCount} onManualEntry={addManual} />
             : view === AppView.EDITING && editing ? <CardForm cardData={editing} onSave={saveCard} onCancel={() => setView(AppView.LIST)} isConfigError={false} mode={creating ? 'create' : editing.needsReview || editing.isError ? 'review' : 'edit'} />
-            : <CardList cards={cards} onScanNew={() => { setCapturedCount(0); setView(AppView.SCANNING); }} onAddManual={addManual} onRetryCard={retry} onDeleteCard={id => setDeleteTarget(cards.find(c => c.id === id) || null)} onEditCard={edit}
+            : <CardList cards={cards} duplicateCount={duplicateCount} onOpenDuplicates={() => { setNotice(null); setShowDuplicates(true); }} onOpenContact={card => { setNotice(null); setContactId(card.id); }} onOpenFollowUps={() => { setNotice(null); setShowFollowUps(true); }} onEventMode={() => { setNotice(null); setShowEventMode(true); }} activityLabel={captureContext.events.join("、")} onEndEvent={() => setCaptureContext({ tags: [], events: [] })} onScanNew={() => { setCapturedCount(0); setView(AppView.SCANNING); }} onAddManual={addManual} onRetryCard={retry} onDeleteCard={id => setDeleteTarget(cards.find(c => c.id === id) || null)} onEditCard={edit}
                 onExportExcel={() => void fileService.exportToExcel(cards).catch(error => notify('error', `Excel 匯出未完成：${errorText(error)}`))} onImportExcel={() => excelInput.current?.click()} onExportJson={() => void backup()} onRestoreJson={() => jsonInput.current?.click()}
                 onClearAll={() => setClearConfirm(true)} onShowInstructions={() => setShowInstructions(true)} onOpenAiSettings={() => setShowAiSettings(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={gapiReady} onGoogleLogin={login} onGoogleLogout={logout}
                 onForceSync={() => void sync(true)} spreadsheetId={spreadsheetId} onLazyImageLoaded={cacheImage} canLoadCloudImages={!!googleUser}
                 statusLabel={statusLabel} statusDescription={statusText} statusTone={statusTone} syncDisabled={!online || saving} />}
         </main>
       </>}
-      <ConfirmationDialog isOpen={!!deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={() => deleteTarget && remove([deleteTarget])} title="刪除這張名片？" message="這會刪除本機名片；若有雲端副本，也會在同步時刪除。" confirmButtonText="確定刪除" />
-      <ConfirmationDialog isOpen={clearConfirm} onCancel={() => setClearConfirm(false)} onConfirm={() => remove(cards)} title="刪除所有顯示的名片？" message="此操作無法復原。建議先建立完整備份，雲端刪除會在連線後同步。" confirmButtonText="確定刪除" />
+      <ConfirmationDialog isOpen={!!deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={() => deleteTarget && remove([deleteTarget])} title="刪除這張名片？" message={`這會刪除本機名片${deleteTarget && mergeSources(accountCards, deleteTarget.id).length ? "及其合併前的原始名片" : ""}；若有雲端副本，也會在同步時刪除。`} confirmButtonText="確定刪除" />
+      <ConfirmationDialog isOpen={clearConfirm} onCancel={() => setClearConfirm(false)} onConfirm={() => remove(cards)} title="刪除所有顯示的名片？" message="此操作會一併刪除合併前的原始名片，無法復原。建議先建立完整備份，雲端刪除會在連線後同步。" confirmButtonText="確定刪除" />
       <ConfirmationDialog isOpen={restoreCards !== null} onCancel={() => setRestoreCards(null)} onConfirm={() => { if (restoreCards) importCards(restoreCards); setRestoreCards(null); }} title="合併備份中的名片" message="保留目前的名片，只加入編號尚未存在的資料。備份中的雲端連結不會跨帳號使用。" confirmButtonText="確定還原" />
+      {showEventMode && <EventMode current={captureContext} knownEvents={knownEvents} onSave={setCaptureContext} onClose={() => setShowEventMode(false)} />}
+      {showDuplicates && <DuplicateReview cards={cards} onMerge={merge} onLoadImage={loadContactImage} onClose={() => setShowDuplicates(false)} />}
+      {showFollowUps && <FollowUpBoard cards={cards} onClose={() => setShowFollowUps(false)} onOpen={id => { setShowFollowUps(false); setContactId(id); }} onComplete={(id, taskId) => {
+        try { changeContact(id, current => ({ ...current, followUps: current.followUps?.map(task => task.id === taskId ? { ...task, completedAt: Date.now() } : task) })); }
+        catch (error) { notify('error', errorText(error)); }
+      }} />}
+      {contact && <ContactWorkspace key={contact.id} card={contact} storageStatus={statusText} sources={mergeSources(accountCards, contact.id)} knownEvents={knownEvents} onClose={() => setContactId(null)} onChange={mutation => changeContact(contact.id, mutation)} onRestore={id => {
+        try { changeContact(id, current => ({ ...current, mergedIntoId: undefined })); setContactId(null); notify('success', '原始名片已重新顯示，合併結果仍保留。'); }
+        catch (error) { notify('error', errorText(error)); }
+      }} />}
       {showInstructions && <InstructionsModal onClose={() => setShowInstructions(false)} />}
       {showAiSettings && <GeminiKeySettings onClose={() => setShowAiSettings(false)} sharedKeyAvailable={scanReady === true} />}
     </div>

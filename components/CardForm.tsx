@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { BusinessCard } from '../types';
 import Icon from './Icon';
 import { imageFileToJpegBase64 } from '../utils/cardImage';
+import ContactLabels from './ContactLabels';
+import { parseLabels, readContactMetadata } from '../services/contactMetadata';
 
 interface CardFormProps {
   cardData: BusinessCard;
@@ -13,6 +15,8 @@ interface CardFormProps {
 
 const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfigError, mode = 'edit' }) => {
   const [formData, setFormData] = useState(cardData);
+  const [tags, setTags] = useState((cardData.tags || []).join('、'));
+  const [events, setEvents] = useState((cardData.events || []).join('、'));
   const [error, setError] = useState<string | null>(null);
   const [isLoadingPhoto, setIsLoadingPhoto] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -29,6 +33,8 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
 
   useEffect(() => {
     setFormData(cardData);
+    setTags((cardData.tags || []).join('、'));
+    setEvents((cardData.events || []).join('、'));
     setError(null);
     setIsLoadingPhoto(false);
     photoRequestRef.current++;
@@ -57,7 +63,7 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
     setIsSaving(true);
     setError(null);
     try {
-      const updatedCard = { ...formData, isError: false, isProcessing: false };
+      const updatedCard = { ...formData, ...readContactMetadata({ ...formData, tags: parseLabels(tags), events: parseLabels(events) }), isError: false, isProcessing: false };
       for (const field of ['name', 'company', 'title', 'phone', 'email', 'address', 'notes'] as const) {
         updatedCard[field] = (updatedCard[field] || '').trim();
       }
@@ -121,6 +127,7 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
           <InputField label="Email" name="email" value={formData.email} onChange={handleChange} icon="mail" inputMode="email" placeholder="多個 Email 可以用逗號分隔" />
           <InputField label="地址" name="address" value={formData.address} onChange={handleChange} icon="company" />
           <div><label htmlFor="card-notes" className="block text-sm font-medium text-gray-300 mb-1.5">備註</label><textarea id="card-notes" name="notes" value={formData.notes || ''} onChange={handleChange} rows={3} placeholder="在哪裡認識、專長、下次聯絡事項…" className="w-full bg-gray-900 border border-gray-700 text-white rounded-xl p-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
+          <ContactLabels tags={tags} events={events} onTags={setTags} onEvents={setEvents} />
           {!!formData.rawText && <details className="rounded-xl bg-gray-900 border border-gray-800 p-3"><summary className="min-h-6 cursor-pointer text-sm text-gray-300">查看辨識原文</summary><p className="mt-3 text-sm text-gray-400 whitespace-pre-wrap break-words select-text">{formData.rawText}</p></details>}
           {error && <p id="card-form-error" role="alert" className="rounded-xl bg-red-950 px-3 py-3 text-sm text-red-200">{error}</p>}
           <div className="sticky bottom-0 flex gap-3 bg-gray-950/95 backdrop-blur-sm pt-3" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>

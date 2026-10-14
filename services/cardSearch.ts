@@ -1,4 +1,5 @@
 import type { BusinessCard } from '../types';
+import { pendingFollowUps } from './contactMetadata';
 
 const searchableFields = ['name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'rawText'] as const;
 
@@ -29,6 +30,10 @@ export const matchesCard = (card: BusinessCard, query: string, category = 'all')
     ? [category as typeof searchableFields[number]]
     : searchableFields;
   const values = fields.map(field => normalizeText(card[field] || ''));
+  if (category === 'all') values.push(...[
+    ...(card.tags || []), ...(card.events || []), ...pendingFollowUps(card).map(task => task.text),
+    ...(card.interactions || []).map(entry => entry.text),
+  ].map(normalizeText));
   const numbers = fields.includes('phone') ? phoneNumbers(card.phone || '') : [];
 
   return terms.every(term => {

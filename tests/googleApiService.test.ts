@@ -4,7 +4,7 @@ import * as api from '../services/googleApiService';
 import { CARD_SHEET_NAME } from '../config';
 import type { BusinessCard } from '../types';
 
-const headers = ['id', 'name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'timestamp', 'imageDriveId', 'rawText'];
+const headers = ['id', 'name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'timestamp', 'imageDriveId', 'rawText', 'contactMeta'];
 const makeCard = (id: string, overrides: Partial<BusinessCard> = {}): BusinessCard => ({
   id, name: id, company: '公司', title: '工程師', phone: '0912345678', email: 'person@example.com',
   address: '台北', notes: '', rawText: '產品／研發', timestamp: 100, ...overrides,
@@ -58,12 +58,15 @@ beforeEach(() => {
           get: async (args: any) => {
             events.push({ type: 'get', args });
             if (args.range.endsWith('!K1')) return { result: { values: rows[0]?.[10] ? [[rows[0][10]]] : [] } };
-            assert.match(args.range, /!A2:K$/);
+            if (args.range.endsWith('!L1')) return { result: { values: rows[0]?.[11] ? [[rows[0][11]]] : [] } };
+            if (args.range.endsWith('!L2:L')) return { result: { values: rows.slice(1).map(row => [row[11] ?? '']) } };
+            assert.match(args.range, /!A2:L$/);
             return { result: { values: rows.slice(1).map(row => [...row]) } };
           },
           update: async (args: any) => {
             events.push({ type: 'update', args });
             if (args.range.endsWith('!K1')) { rows[0] ??= []; rows[0][10] = args.resource.values[0][0]; }
+            else if (args.range.endsWith('!L1')) { rows[0] ??= []; rows[0][11] = args.resource.values[0][0]; }
             else {
               const rowNumber = Number(args.range.match(/!A(\d+)/)?.[1]);
               assert.ok(rowNumber > 0);
@@ -102,7 +105,7 @@ test('updating first, middle, and last cards changes exactly their sheet rows', 
   assert.deepEqual(rows[0], headers);
   assert.deepEqual(rows.slice(1).map(row => row[1]), ['Edited first', 'Edited second', 'Edited last']);
   assert.deepEqual(events.filter(event => event.type === 'update').map(event => event.args.range), [
-    `'${CARD_SHEET_NAME}'!A2:K2`, `'${CARD_SHEET_NAME}'!A3:K3`, `'${CARD_SHEET_NAME}'!A4:K4`,
+    `'${CARD_SHEET_NAME}'!A2:L2`, `'${CARD_SHEET_NAME}'!A3:L3`, `'${CARD_SHEET_NAME}'!A4:L4`,
   ]);
 });
 
@@ -344,4 +347,34 @@ test('concurrent uploads of two different photos on one card cannot reuse the wr
   const ids = await Promise.all([api.uploadImageToDrive('YQ==', 'first'), api.uploadImageToDrive('Yg==', 'first')]);
   assert.equal(new Set(ids).size, 2);
   assert.equal(uploads, 2);
+});
+
+test('contact tags, events, tasks, interactions and merge links round-trip in L without moving existing columns', async () => {
+  rows = [headers.slice(0, 11), toRow(makeCard('legacy')).slice(0, 11)];
+  const task = { id: 'task', text: '寄型錄', dueDate: '2026-10-16', createdAt: 100 };
+  const card = makeCard('legacy', { tags: ['供應商'], events: ['自動化展'], followUps: [task], interactions: [], mergedIntoId: 'merged-card', timestamp: 200 });
+  await api.updateCardInSheet(card);
+  assert.equal(rows[0][11], 'contactMeta');
+  assert.equal(rows[1][1], card.name);
+  assert.deepEqual(JSON.parse(String(rows[1][11])).followUps, [task]);
+  const restored = (await api.getCloudCardsLight()).cards[0];
+  assert.deepEqual(restored.tags, ['供應商']);
+  assert.deepEqual(restored.followUps, [task]);
+  assert.equal(restored.mergedIntoId, 'merged-card');
+});
+
+test('occupied L headers and unlabeled L data block migration without overwriting user content', async () => {
+  rows[0] = [...headers.slice(0, 11), 'private-custom-column'];
+  await assert.rejects(api.prepareCloudStorage(), /L 欄/);
+  assert.equal(rows[0][11], 'private-custom-column');
+  rows[0][11] = '';
+  rows[1][11] = 'keep this data';
+  await assert.rejects(api.prepareCloudStorage(), /L 欄/);
+  assert.equal(rows[1][11], 'keep this data');
+});
+
+test('malformed cloud contact history fails reads rather than dropping tasks on next upload', async () => {
+  rows[1][11] = '{broken';
+  await assert.rejects(api.getCloudCardsLight(), /人脈資料無法讀取/);
+  assert.equal(rows[1][11], '{broken');
 });

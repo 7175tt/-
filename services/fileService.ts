@@ -1,6 +1,7 @@
 
 import { BusinessCard } from '../types';
 import { MAX_BACKUP_BYTES, MAX_IMPORT_CARDS, parseCardBackup } from './backupValidation';
+import { decodeContactMetadata, encodeContactMetadata, parseLabels, readContactMetadata } from './contactMetadata';
 export { downloadVCard as exportToVCard } from './contactExport';
 
 /**
@@ -10,11 +11,15 @@ export { downloadVCard as exportToVCard } from './contactExport';
 export const exportToExcel = async (cards: BusinessCard[]): Promise<void> => {
     if (cards.length === 0) return;
     const XLSX = await import('xlsx');
-    const headers = ['姓名', '公司', '職稱', '電話', 'Email', '地址', '備註', '建立時間', '辨識原文'];
+    const headers = ['姓名', '公司', '職稱', '電話', 'Email', '地址', '備註', '建立時間', '辨識原文', '標籤', '認識場合', '人脈紀錄 JSON'];
     const data = cards.map(card => [
         card.name, card.company, card.title, card.phone, card.email, card.address, card.notes || '',
         new Date(card.timestamp).toISOString(), card.rawText || '',
+        (card.tags || []).join('、'), (card.events || []).join('、'), encodeContactMetadata({ followUps: card.followUps, interactions: card.interactions }),
     ]);
+    if (data.some(row => row.some(value => value.length > 32_767))) {
+        throw new Error('部分紀錄超過 Excel 單一儲存格的 32,767 字限制，請改用完整 JSON 備份保存全部內容。');
+    }
     const worksheet = XLSX.utils.aoa_to_sheet([headers, ...data]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, '名片資料');
@@ -78,8 +83,10 @@ export const importFromExcel = async (file: File, existingCards: BusinessCard[])
                 const importedCards: BusinessCard[] = [];
                 // Skip only repeated content. A changed phone, note or role must not disappear.
                 const identifierFor = (card: Omit<BusinessCard, 'id'>) =>
-                    JSON.stringify([card.name, card.company, card.title, card.phone, card.email, card.address, card.notes, card.rawText]
-                        .map(value => (value || '').normalize('NFKC').trim()));
+                    JSON.stringify([[card.name, card.company, card.title, card.phone, card.email, card.address, card.notes, card.rawText]
+                        .map(value => (value || '').normalize('NFKC').trim()),
+                        encodeContactMetadata({ tags: card.tags?.length ? card.tags : undefined, events: card.events?.length ? card.events : undefined,
+                            followUps: card.followUps?.length ? card.followUps : undefined, interactions: card.interactions?.length ? card.interactions : undefined })]);
                 const existingCardIdentifiers = new Set(existingCards.map(identifierFor));
 
                 for (let i = 1; i < jsonData.length; i++) {
@@ -95,6 +102,8 @@ export const importFromExcel = async (file: File, existingCards: BusinessCard[])
                         : typeof originalDate === 'string' ? Date.parse(originalDate) : NaN;
 
                     const cardData: Omit<BusinessCard, 'id'> = {
+                        ...readContactMetadata({ ...decodeContactMetadata(cell('人脈紀錄 JSON')), mergedIntoId: undefined,
+                            tags: parseLabels(cell('標籤')), events: parseLabels(cell('認識場合')) }),
                         name: cell('姓名'),
                         company: cell('公司'),
                         title: cell('職稱'),

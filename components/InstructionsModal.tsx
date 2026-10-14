@@ -66,6 +66,16 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
             </ul>
           </InstructionSection>
 
+          <InstructionSection icon="notes" title="活動、人脈與跟進">
+            <ul className="list-disc list-inside space-y-2 text-gray-400">
+              <li>參展前開啟「工具 → 活動模式」，填寫場合與標籤，之後拍攝、選照片或手動新增的名片自動套用。結束活動或重新整理後停止套用。</li>
+              <li>每張名片的「跟進」可編輯標籤、安排待辦與記錄談話。首頁及工具選單可開啟「待跟進」，查看今天或已逾期的事項。</li>
+              <li>需要手機通知時，使用「加入 Google 行事曆」，再於行事曆設定提醒；App 與行事曆的待辦各自管理。</li>
+              <li>「重複名片整理」提供欄位比較，必須選擇有差異的內容才會合併。原始名片保留在合併結果的「跟進與紀錄」中，可重新還原到列表。</li>
+              <li>上述資料一併保存在本機、Google 與完整 JSON 備份；Excel 包含目前顯示的名片、標籤與人脈紀錄，原始合併名片及照片請使用完整備份。</li>
+            </ul>
+          </InstructionSection>
+
           <InstructionSection icon="upload" title="本機資料管理 (離線模式)">
              <ul className="list-disc list-inside space-y-2 text-gray-400">
                 <li>若您未登入 Google，所有資料僅儲存在您的目前裝置和瀏覽器中。</li>

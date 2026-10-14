@@ -1,5 +1,28 @@
 
-export interface BusinessCard {
+export interface FollowUp {
+  id: string;
+  text: string;
+  dueDate: string; // Local calendar date (YYYY-MM-DD), never a UTC instant.
+  createdAt: number;
+  completedAt?: number;
+}
+
+export interface Interaction {
+  id: string;
+  text: string;
+  occurredOn: string;
+  createdAt: number;
+}
+
+export interface ContactMetadata {
+  tags?: string[];
+  events?: string[];
+  followUps?: FollowUp[];
+  interactions?: Interaction[];
+  mergedIntoId?: string; // The original remains stored, including its photo.
+}
+
+export interface BusinessCard extends ContactMetadata {
   id: string;
   name: string;
   company: string;

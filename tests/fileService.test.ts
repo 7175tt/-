@@ -63,3 +63,15 @@ test('JSON file import rejects malformed content and oversize before returning c
   assert.equal(imported[0].name, '舊名片');
   assert.ok(imported[0].id);
 });
+
+test('Excel restores contact context and history; a changed task is not silently skipped', async () => {
+  const task = { id: 'task', text: '寄型錄', dueDate: '2026-10-16', createdAt: 100 };
+  const extended = [...headers, '標籤', '認識場合', '人脈紀錄 JSON'];
+  const file = workbook([extended, ['小明', 'Example', '', '', '', '', '', '', '', '供應商、重要', '自動化展', JSON.stringify({ version: 1, followUps: [task] })]]);
+  const imported = await importFromExcel(file, []);
+  assert.deepEqual(imported[0].tags, ['供應商', '重要']);
+  assert.deepEqual(imported[0].events, ['自動化展']);
+  assert.deepEqual(imported[0].followUps, [task]);
+  assert.equal((await importFromExcel(file, imported)).length, 0);
+  assert.equal((await importFromExcel(file, [{ ...imported[0], followUps: [{ ...task, completedAt: 200 }] }])).length, 1);
+});

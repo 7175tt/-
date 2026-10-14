@@ -1,4 +1,5 @@
 import type { BusinessCard } from '../types';
+import { readContactMetadata } from './contactMetadata';
 
 export const MAX_BACKUP_BYTES = 50 * 1024 * 1024;
 export const MAX_IMPORT_CARDS = 5000;
@@ -65,6 +66,7 @@ export function parseCardBackup(text: string, now = Date.now()): BusinessCard[] 
     // Never revive an interrupted request as a permanent loading indicator.
     const interrupted = entry.isProcessing === true;
     return {
+      ...readContactMetadata(entry),
       ...fields, id, timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : now,
       ...(entry.imageBase64 ? { imageBase64: entry.imageBase64 as string } : {}),
       ...(entry.imageDriveId ? { imageDriveId: entry.imageDriveId as string } : {}),

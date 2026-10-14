@@ -29,7 +29,7 @@
     <section class="policy-section" id="local">
       <h2>1. 保存在瀏覽器的資料</h2>
       <ul>
-        <li><span class="term">名片資料：</span>照片、姓名、公司、職稱、電話、Email、地址、備註、辨識原文與同步紀錄，保存在目前瀏覽器的 IndexedDB。舊版升級時，可能保留 localStorage 中的舊資料作為復原副本。</li>
+        <li><span class="term">名片資料：</span>照片、姓名、公司、職稱、電話、Email、地址、備註、辨識原文、標籤、認識場合、跟進待辦、互動紀錄、合併前名片與同步紀錄，保存在目前瀏覽器的 IndexedDB。舊版升級時，可能保留 localStorage 中的舊資料作為復原副本。</li>
         <li><span class="term">Google 登入：</span>登入後取得的姓名、Email、頭像網址與暫時存取權杖，保存在分頁工作階段的 sessionStorage，供顯示帳號、辨識資料所屬帳號及呼叫 Google API。</li>
         <li><span class="term">個人 Gemini 金鑰：</span>預設保存在目前分頁的 sessionStorage；只有您勾選「在此裝置記住金鑰」，才會改存 localStorage。金鑰不會加入名片、名片備份、Google Sheets 或 Drive 同步資料。</li>
       </ul>
@@ -39,7 +39,7 @@
     <section class="policy-section" id="google">
       <h2>2. 選用的 Google 登入與同步</h2>
       <p>您可以不登入 Google，直接管理本機名片。選擇登入時，瀏覽器會向 Google 取得基本個人資料，並依授權存取 Google Sheets 與本應用程式可使用的 Google Drive 檔案。</p>
-      <p>應用程式請求姓名、Email、頭像，以及僅限本應用程式建立或獲授權檔案的存取權（drive.file）。這些權限用於尋找或建立名片專用試算表、讀寫聯絡資訊與辨識原文，以及上傳、下載和刪除對應照片。</p>
+      <p>應用程式請求姓名、Email、頭像，以及僅限本應用程式建立或獲授權檔案的存取權（drive.file）。這些權限用於尋找或建立名片專用試算表、讀寫聯絡資訊、辨識原文與人脈紀錄，以及上傳、下載和刪除對應照片。</p>
       <p>同步由您的瀏覽器直接與 Google API 通訊，不經本網站的 AI 後端。名片存於您自己的 Google 帳號；應用程式不會自動把照片設為公開分享。您自行變更的 Google 檔案或資料夾分享權限，仍依 Google 的設定生效。</p>
       <p>Google 帳號與雲端資料只用於您啟用的登入及同步功能，不用於廣告、販售資料或建立廣告個人檔案。</p>
     </section>

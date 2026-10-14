@@ -8,6 +8,7 @@ interface CardScannerProps {
   isConfigError: boolean;
   pendingCount?: number;
   capturedCount?: number;
+  activityLabel?: string;
   onManualEntry?: () => void;
 }
 
@@ -22,7 +23,7 @@ function cameraErrorMessage(error: unknown) {
   return '無法開啟即時相機。你仍可使用手機相機或選擇照片。';
 }
 
-const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish, isConfigError, pendingCount = 0, capturedCount, onManualEntry }) => {
+const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish, isConfigError, pendingCount = 0, capturedCount, onManualEntry, activityLabel }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const guideRef = useRef<HTMLDivElement>(null);
@@ -280,6 +281,7 @@ const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish
         <div className="text-right"><h1 className="font-semibold">掃描名片</h1><p className="text-xs text-gray-400">拍攝 → 核對 → 儲存</p></div>
         {isTorchSupported && <button type="button" onClick={toggleTorch} aria-label={isTorchOn ? '關閉補光燈' : '開啟補光燈'} aria-pressed={isTorchOn} className="min-h-11 min-w-11 flex items-center justify-center rounded-full bg-gray-800"><Icon name={isTorchOn ? 'sun' : 'bolt'} className="h-6 w-6 text-yellow-300" /></button>}
       </header>
+      {activityLabel && <p className="shrink-0 px-4 pb-2 text-xs text-blue-300 truncate">活動：{activityLabel}</p>}
 
       <div ref={previewRef} className="relative flex-1 min-h-24 overflow-hidden bg-black flex items-center justify-center">
         <video ref={videoRef} autoPlay muted playsInline onCanPlay={() => {
