@@ -47,6 +47,8 @@ npm run dev
 
 Google 同步需啟用 Sheets／Drive API，設定 OAuth 同意畫面，並將實際網站來源加入「已授權的 JavaScript 來源」。手機瀏覽器的即時相機需要 HTTPS；本機 localhost 可用於桌面驗證。部署到網站後應使用 HTTPS。
 
+目前預設 OAuth 用戶端為 `959741792176-makrjgf2p65l0a9p6kdsn7k0386v9vl2.apps.googleusercontent.com`，正式網站來源為 `https://business-card-keeper.ai.studio`。若出現 `400 origin_mismatch`，請在 [Google Cloud 用戶端設定](https://console.cloud.google.com/auth/clients) 編輯實際使用的網頁用戶端，將此來源加入「已授權的 JavaScript 來源」，保留其他仍使用中的來源。若部署環境已有 `VITE_GOOGLE_CLIENT_ID`，須同步更新為此 ID 或移除覆寫，並重新建置、部署；僅修改執行時環境變數不會更新已打包的前端。
+
 在受管理的 Codex 雲端環境，沿用平台 HTTPS 代理與 CA 設定；Node 24 可使用 `NODE_USE_ENV_PROXY=1 npm run dev`。不要停用 TLS 驗證。
 
 ## 驗證與正式啟動

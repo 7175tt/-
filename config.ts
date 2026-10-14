@@ -1,18 +1,9 @@
-// =================================================================================
-// !! 重要設定 !!
-// =================================================================================
-// 若要啟用 Google 雲端同步功能，您必須從 Google Cloud Console 建立一個
-// OAuth 2.0 用戶端 ID，並將其貼在此處。
-//
-// 步驟：
-// 1. 前往 https://console.cloud.google.com/apis/credentials
-// 2. 建立一個新的「OAuth 2.0 用戶端 ID」。
-// 3. 應用程式類型請選擇「網頁應用程式」。
-// 4. 在「已授權的 JavaScript 來源」下方，新增您部署此應用程式的網址。
-//    （應用程式啟動時會在瀏覽器主控台顯示正確的來源網址）。
-// 5. 複製「用戶端 ID」並貼在下方，取代預設的預留位置字串。
-// =================================================================================
-export const GOOGLE_CLIENT_ID: string = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "570663652971-og086jj64jja54dr8vqvvqqrpkcf0if7.apps.googleusercontent.com";
+// Google OAuth「網頁應用程式」的公開用戶端 ID，不是 Gemini API key。
+// 在 https://console.cloud.google.com/auth/clients 編輯相同 ID 的用戶端，
+// 將 https://business-card-keeper.ai.studio 加入「已授權的 JavaScript 來源」。
+// 其他網站來源需各自登記；來源不含路徑、查詢參數或結尾斜線。
+// 部署時可用 VITE_GOOGLE_CLIENT_ID 覆寫；Vite 在建置時讀取，變更後需重新建置部署。
+export const GOOGLE_CLIENT_ID: string = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "959741792176-makrjgf2p65l0a9p6kdsn7k0386v9vl2.apps.googleusercontent.com";
 
 // Google Sheets 和 Drive 中使用的檔案/資料夾名稱。
 export const SPREADSHEET_NAME = "名片管家資料庫 (Business Card Keeper)";
