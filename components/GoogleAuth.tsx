@@ -19,10 +19,10 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ user, syncStatus, isGapiReady, 
         onClick={onLogin}
         disabled={isDisabled}
         className="flex items-center gap-2 px-3 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors text-sm disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-wait"
-        title={isDisabled ? "正在初始化 Google 服務..." : "使用 Google 登入"}
+        title={isDisabled ? "正在連接 Google 服務" : "登入後自動同步至您的 Google Sheets 與 Drive"}
       >
         <Icon name="google-logo" className="h-5 w-5" />
-        <span className="font-medium">{isDisabled ? "服務準備中..." : "使用 Google 登入"}</span>
+        <span className="font-medium">{isDisabled ? "連接 Google…" : "登入並自動同步"}</span>
       </button>
     );
   }

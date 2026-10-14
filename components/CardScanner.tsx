@@ -1,245 +1,236 @@
-
-// Add necessary type definitions for experimental APIs which might not be in default TS DOM typings.
-declare global {
-  interface MediaTrackCapabilities {
-    focusMode?: string[];
-    exposureMode?: string[];
-    torch?: boolean;
-  }
-  interface MediaTrackConstraints {
-    focusMode?: string;
-    exposureMode?: string;
-    advanced?: MediaTrackConstraintSet[];
-  }
-  interface MediaTrackConstraintSet {
-    torch?: boolean;
-    focusMode?: string;
-  }
-  interface ImageCapture {
-    takePhoto(photoSettings?: any): Promise<Blob>;
-    getPhotoCapabilities(): Promise<any>;
-  }
-  var ImageCapture: {
-    new (videoTrack: MediaStreamTrack): ImageCapture;
-  };
-  interface ScreenOrientation {
-    lock(orientation: 'landscape' | 'portrait'): Promise<void>;
-    unlock(): void;
-  }
-}
-
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import Icon from './Icon';
+import { getObjectCoverCrop, imageFileToJpegBase64, imageToJpegBase64 } from '../utils/cardImage';
 
 interface CardScannerProps {
   onCaptureAndProcess: (base64Image: string) => void;
   onFinish: () => void;
   isConfigError: boolean;
+  pendingCount?: number;
+  capturedCount?: number;
+  onManualEntry?: () => void;
 }
 
-const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish, isConfigError }) => {
+type CameraCapabilities = MediaTrackCapabilities & { torch?: boolean; focusMode?: string[] };
+type CameraConstraint = MediaTrackConstraintSet & { torch?: boolean; focusMode?: string };
+
+function cameraErrorMessage(error: unknown) {
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') return '相機權限尚未開啟。你可以在瀏覽器設定允許相機，或直接選擇照片。';
+  if (name === 'NotFoundError') return '找不到可用的相機，請選擇名片照片。';
+  if (name === 'NotReadableError') return '相機可能正被其他程式使用，請關閉其他相機程式後重試。';
+  return '無法開啟即時相機。你仍可使用手機相機或選擇照片。';
+}
+
+const CardScanner: React.FC<CardScannerProps> = ({ onCaptureAndProcess, onFinish, isConfigError, pendingCount = 0, capturedCount, onManualEntry }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const guideRef = useRef<HTMLDivElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const nativeCameraRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const imageCaptureRef = useRef<ImageCapture | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(false);
+  const cameraRequestRef = useRef(0);
+  const busyRef = useRef(false);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
   const [isTorchSupported, setIsTorchSupported] = useState(false);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [sessionCount, setSessionCount] = useState(0);
+  const [guideWidth, setGuideWidth] = useState(280);
 
-  const startCamera = useCallback(async () => {
-    if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-    }
-    const constraints: MediaStreamConstraints = {
-      video: { 
-        facingMode: 'environment', 
-        width: { ideal: 4096 }, 
-        height: { ideal: 2160 } 
-      },
-    };
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-      const videoTrack = stream.getVideoTracks()[0];
-
-      if (typeof ImageCapture !== 'undefined') {
-        imageCaptureRef.current = new ImageCapture(videoTrack);
-      }
-      
-      if (videoTrack?.getCapabilities) {
-          const capabilities = videoTrack.getCapabilities();
-          if (capabilities.torch) setIsTorchSupported(true);
-          if (capabilities.focusMode?.includes('continuous')) {
-            videoTrack.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-          }
-      }
-    } catch (err) {
-        console.error("Error accessing camera:", err);
-        setError('無法存取相機。請檢查瀏覽器權限設定。');
+  const stopCamera = useCallback(() => {
+    cameraRequestRef.current++;
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    if (mountedRef.current) {
+      setIsReady(false);
+      setIsTorchOn(false);
+      setIsTorchSupported(false);
     }
   }, []);
 
-  useEffect(() => {
-    startCamera();
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [startCamera]);
-  
-  const toggleTorch = useCallback(async () => {
-    if (!streamRef.current || !isTorchSupported) return;
-    const videoTrack = streamRef.current.getVideoTracks()[0];
+  const startCamera = useCallback(async () => {
+    stopCamera();
+    const request = cameraRequestRef.current;
+    setCameraError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('這個瀏覽器無法開啟即時相機，請使用手機相機或選擇照片。');
+      return;
+    }
     try {
-        await videoTrack.applyConstraints({ advanced: [{ torch: !isTorchOn }] });
-        setIsTorchOn(prev => !prev);
-    } catch (e) {
-        console.error("Failed to toggle torch:", e);
-    }
-  }, [isTorchOn, isTorchSupported]);
-
-  const handleCapture = useCallback(async () => {
-    const videoEl = videoRef.current;
-    const guideEl = guideRef.current;
-    const canvas = canvasRef.current;
-    if (!videoEl || !guideEl || !canvas) return;
-
-    setIsFlashing(true);
-    setTimeout(() => setIsFlashing(false), 300);
-    
-    const context = canvas.getContext('2d');
-    if (!context) return;
-
-    const processAndCrop = async (imageSource: ImageBitmap | HTMLVideoElement) => {
-        const sourceWidth = imageSource instanceof HTMLVideoElement ? imageSource.videoWidth : imageSource.width;
-        const sourceHeight = imageSource instanceof HTMLVideoElement ? imageSource.videoHeight : imageSource.height;
-        
-        const viewWidth = videoEl.offsetWidth;
-        const viewHeight = videoEl.offsetHeight;
-
-        const guideWidth = guideEl.offsetWidth;
-        const guideHeight = guideEl.offsetHeight;
-        const guideTop = guideEl.offsetTop;
-        const guideLeft = guideEl.offsetLeft;
-
-        const sourceRatio = sourceWidth / sourceHeight;
-        const viewRatio = viewWidth / viewHeight;
-        
-        let scale = 1;
-        let offsetX = 0;
-        let offsetY = 0;
-        
-        // This logic handles 'object-cover' behavior
-        if (sourceRatio > viewRatio) { // Video is wider than view (letterboxed)
-            scale = viewHeight / sourceHeight;
-            offsetX = (viewWidth - sourceWidth * scale) / 2;
-        } else { // Video is taller than view (pillarboxed)
-            scale = viewWidth / sourceWidth;
-            offsetY = (viewHeight - sourceHeight * scale) / 2;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } },
+      });
+      if (!mountedRef.current || request !== cameraRequestRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      streamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) { stopCamera(); return; }
+      video.srcObject = stream;
+      await video.play();
+      if (!mountedRef.current || request !== cameraRequestRef.current) return;
+      const track = stream.getVideoTracks()[0];
+      track?.addEventListener('ended', () => {
+        if (streamRef.current === stream && mountedRef.current) {
+          stopCamera();
+          setCameraError('相機已暫停，請重新開啟相機或選擇照片。');
         }
+      }, { once: true });
+      let capabilities: CameraCapabilities = {};
+      try { capabilities = track?.getCapabilities?.() || {}; } catch { /* Optional camera controls. */ }
+      setIsTorchSupported(!!capabilities.torch);
+      if (capabilities.focusMode?.includes('continuous')) {
+        const constraints: CameraConstraint = { focusMode: 'continuous' };
+        // Focus support varies by phone; it must never prevent capture.
+        void track.applyConstraints({ advanced: [constraints] }).catch(() => {});
+      }
+    } catch (error) {
+      if (mountedRef.current && request === cameraRequestRef.current) {
+        stopCamera();
+        setCameraError(cameraErrorMessage(error));
+      }
+    }
+  }, [stopCamera]);
 
-        const cropX = (guideLeft - offsetX) / scale;
-        const cropY = (guideTop - offsetY) / scale;
-        const cropWidth = guideWidth / scale;
-        const cropHeight = guideHeight / scale;
-        
-        // Scale down to a reasonable size for AI processing, preserving detail without hitting proxy size limits
-        const outputWidth = Math.min(cropWidth, 1024);
-        const outputHeight = cropWidth > 0 ? outputWidth * (cropHeight / cropWidth) : 0;
-        
-        canvas.width = outputWidth;
-        canvas.height = outputHeight;
-        
-        context.imageSmoothingQuality = 'high';
-        context.drawImage(imageSource, cropX, cropY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
-        
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.82); // Optimized speed/size for proxy transfer and Gemini OCR
-        onCaptureAndProcess(dataUrl.split(',')[1]);
+  useEffect(() => {
+    mountedRef.current = true;
+    void startCamera();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') stopCamera();
+      else if (!streamRef.current) void startCamera();
     };
+    const handlePageRestore = (event: PageTransitionEvent) => {
+      if (event.persisted && document.visibilityState === 'visible' && !streamRef.current) void startCamera();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', stopCamera);
+    window.addEventListener('pageshow', handlePageRestore);
+    return () => {
+      mountedRef.current = false;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', stopCamera);
+      window.removeEventListener('pageshow', handlePageRestore);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+      stopCamera();
+    };
+  }, [startCamera, stopCamera]);
 
-    if (imageCaptureRef.current) {
-        try {
-            const photoCapabilities = await imageCaptureRef.current.getPhotoCapabilities();
-            const blob = await imageCaptureRef.current.takePhoto({
-                imageWidth: photoCapabilities.imageWidth.max,
-                imageHeight: photoCapabilities.imageHeight.max,
-            });
-            const imageBitmap = await createImageBitmap(blob);
-            await processAndCrop(imageBitmap);
-            return;
-        } catch (e) {
-            console.error("ImageCapture API with max resolution failed, falling back to canvas method.", e);
-        }
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) return;
+    const resizeGuide = () => setGuideWidth(Math.max(1, Math.min(preview.clientWidth * 0.88, preview.clientHeight * 0.8 * 85 / 54, 640)));
+    resizeGuide();
+    const observer = new ResizeObserver(resizeGuide);
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, []);
+
+  const toggleTorch = async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || !isTorchSupported) return;
+    try {
+      const constraints: CameraConstraint = { torch: !isTorchOn };
+      await track.applyConstraints({ advanced: [constraints] });
+      if (mountedRef.current) setIsTorchOn(value => !value);
+    } catch {
+      setUploadError('這個相機暫時無法切換補光燈，請移到光線充足的地方拍攝。');
     }
-    
-    // Fallback if ImageCapture fails or is not available
-    await processAndCrop(videoEl);
+  };
 
-  }, [onCaptureAndProcess]);
+  const handleCapture = () => {
+    const video = videoRef.current;
+    const guide = guideRef.current;
+    if (busyRef.current || !isReady || !video || !guide || video.readyState < 2 || !video.videoWidth) return;
+    busyRef.current = true;
+    setIsBusy(true);
+    setUploadError(null);
+    try {
+      // Capture the displayed video frame. A still photo can have a different field of view.
+      const crop = getObjectCoverCrop(video.videoWidth, video.videoHeight, video.getBoundingClientRect(), guide.getBoundingClientRect());
+      onCaptureAndProcess(imageToJpegBase64(video, crop));
+      setSessionCount(count => count + 1);
+      setIsFlashing(true);
+      flashTimerRef.current = setTimeout(() => {
+        busyRef.current = false;
+        if (mountedRef.current) { setIsFlashing(false); setIsBusy(false); }
+      }, 450);
+    } catch (error) {
+      busyRef.current = false;
+      setIsBusy(false);
+      setUploadError(error instanceof Error ? error.message : '拍攝失敗，請再試一次。');
+    }
+  };
 
+  const handleFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length || busyRef.current) return;
+    busyRef.current = true;
+    setIsBusy(true);
+    setUploadError(null);
+    const failures: string[] = [];
+    for (let index = 0; index < files.length && mountedRef.current; index++) {
+      setUploadProgress(`準備照片 ${index + 1} / ${files.length}`);
+      try {
+        const base64 = await imageFileToJpegBase64(files[index]);
+        if (!mountedRef.current) break;
+        onCaptureAndProcess(base64);
+        setSessionCount(count => count + 1);
+      } catch (error) {
+        failures.push(`${files[index].name}：${error instanceof Error ? error.message : '無法讀取照片。'}`);
+      }
+    }
+    busyRef.current = false;
+    if (mountedRef.current) {
+      setIsBusy(false);
+      setUploadProgress('');
+      setUploadError(failures.length ? failures.join('；') : null);
+    }
+  };
+
+  const total = capturedCount ?? sessionCount;
   return (
-    <div className={`fixed bg-gray-900 flex flex-col items-center justify-center text-white inset-x-0 bottom-0 ${isConfigError ? 'top-12' : 'top-0'}`}>
-        {isFlashing && <div className="absolute inset-0 bg-white z-30 animate-fade-out pointer-events-none"></div>}
-        <div className="absolute top-4 left-4 z-20">
-          <button onClick={onFinish} className="bg-gray-800/50 px-4 py-2 rounded-full hover:bg-gray-700/70 transition-colors flex items-center gap-2">
-            <Icon name="back" className="h-5 w-5" />
-            <span className="font-medium text-sm">完成</span>
-          </button>
-        </div>
-        {isTorchSupported && (
-          <div className="absolute top-4 right-4 z-20">
-              <button 
-                onClick={toggleTorch} 
-                className="bg-gray-800/50 p-2 rounded-full hover:bg-gray-700/70 transition-colors"
-                title={isTorchOn ? '關閉閃光燈' : '開啟閃光燈'}
-              >
-                  <Icon name={isTorchOn ? 'sun' : 'bolt'} className="h-6 w-6 text-yellow-300" />
-              </button>
-          </div>
-        )}
+    <section aria-label="掃描名片" className={`fixed z-30 bg-gray-950 flex flex-col text-white inset-x-0 bottom-0 ${isConfigError ? 'top-12' : 'top-0'}`}>
+      <header className="flex shrink-0 items-center justify-between gap-3 px-4 pb-3 bg-gray-950" style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
+        <button type="button" onClick={onFinish} disabled={isBusy} className="min-h-11 flex items-center gap-1 rounded-xl bg-gray-800 px-3 text-sm font-semibold disabled:opacity-50">
+          <Icon name="back" className="h-5 w-5" />完成{total > 0 ? `（${total}）` : ''}
+        </button>
+        <div className="text-right"><h1 className="font-semibold">掃描名片</h1><p className="text-xs text-gray-400">拍攝 → 核對 → 儲存</p></div>
+        {isTorchSupported && <button type="button" onClick={toggleTorch} aria-label={isTorchOn ? '關閉補光燈' : '開啟補光燈'} aria-pressed={isTorchOn} className="min-h-11 min-w-11 flex items-center justify-center rounded-full bg-gray-800"><Icon name={isTorchOn ? 'sun' : 'bolt'} className="h-6 w-6 text-yellow-300" /></button>}
+      </header>
 
-        <div className="w-full h-full relative flex items-center justify-center">
-          {error ? (
-            <div className="text-center p-4 bg-red-900/50 rounded-lg">
-              <p className="font-bold">發生錯誤</p>
-              <p>{error}</p>
-            </div>
-          ) : (
-            <>
-              <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover bg-black"></video>
-              <div 
-                ref={guideRef}
-                className="absolute w-[90%] aspect-[8.5/5.4] border-4 border-white/50 rounded-lg shadow-2xl pointer-events-none"
-                style={{ boxShadow: '0 0 0 9999px rgba(0,0,0,0.6)'}}
-              ></div>
-            </>
-          )}
-        </div>
+      <div ref={previewRef} className="relative flex-1 min-h-24 overflow-hidden bg-black flex items-center justify-center">
+        <video ref={videoRef} autoPlay muted playsInline onCanPlay={() => setIsReady(!!videoRef.current?.videoWidth)} className="absolute inset-0 w-full h-full object-cover" aria-label="即時相機預覽" />
+        {!cameraError && <div ref={guideRef} className="relative rounded-2xl border-2 border-white/90 pointer-events-none" style={{ width: guideWidth, aspectRatio: '85 / 54', boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)' }} />}
+        {!isReady && !cameraError && <p role="status" className="absolute rounded-xl bg-black/70 px-4 py-3">正在開啟相機…</p>}
+        {cameraError && <div className="relative max-w-sm px-6 py-5 text-center"><Icon name="camera" className="mx-auto h-10 w-10 text-gray-400 mb-3" /><p role="status" className="text-sm leading-relaxed">{cameraError}</p><button type="button" onClick={() => void startCamera()} className="mt-4 min-h-11 rounded-xl bg-gray-800 px-5 text-sm">重新開啟相機</button></div>}
+        {isFlashing && <div className="absolute inset-0 bg-white/80 pointer-events-none" />}
+      </div>
 
-        <div className="absolute bottom-28 w-full px-4 text-center">
-            <div className="bg-black/40 text-white text-sm py-2 px-3 rounded-lg inline-block backdrop-blur-sm">
-              <p>將名片對準框線，可連續拍攝</p>
-            </div>
+      <footer className="shrink-0 px-4 pt-3 bg-gray-950" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
+        <p className="text-center text-sm text-gray-300">{cameraError ? '每張照片放一張名片，文字越清楚越容易辨識' : '將名片完整對準框線，避開反光，可連續拍攝'}</p>
+        <p role="status" aria-live="polite" className="min-h-6 mt-1 text-center text-xs text-blue-300">{uploadProgress || (pendingCount > 0 ? `${pendingCount} 張正在辨識，可以繼續拍攝` : total > 0 ? `已加入 ${total} 張，按「完成」核對內容` : '也可以從相簿一次選擇多張照片')}</p>
+        {uploadError && <p role="alert" className="mx-auto max-w-xl max-h-20 overflow-y-auto rounded-lg bg-red-950 px-3 py-2 mb-2 text-sm text-red-200">{uploadError}</p>}
+        <div className="mx-auto max-w-md flex items-center justify-between gap-3 py-2">
+          <button type="button" disabled={isBusy} onClick={() => galleryRef.current?.click()} className="min-h-14 min-w-20 flex flex-col items-center justify-center gap-1 rounded-xl px-3 text-sm disabled:opacity-50"><Icon name="upload" className="h-6 w-6" />選擇照片</button>
+          <button type="button" onClick={handleCapture} disabled={!isReady || isBusy || !!cameraError} aria-label="拍攝新名片" className="h-16 w-16 shrink-0 rounded-full border-4 border-white p-1 disabled:opacity-35 disabled:cursor-not-allowed"><span className="block w-full h-full rounded-full bg-white" /></button>
+          <button type="button" disabled={isBusy} onClick={() => nativeCameraRef.current?.click()} className="min-h-14 min-w-20 flex flex-col items-center justify-center gap-1 rounded-xl px-3 text-sm disabled:opacity-50"><Icon name="camera" className="h-6 w-6" />手機相機</button>
         </div>
-        
-        <div className="absolute bottom-8 flex items-center justify-center w-full z-20">
-          <button
-            onClick={handleCapture}
-            disabled={!!error}
-            className="w-20 h-20 rounded-full bg-white/30 border-4 border-white flex items-center justify-center backdrop-blur-sm hover:bg-white/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            aria-label="拍攝新名片"
-          >
-            <div className="w-16 h-16 rounded-full bg-white"></div>
-          </button>
-        </div>
-        <canvas ref={canvasRef} className="hidden"></canvas>
-    </div>
+        {onManualEntry && <button type="button" disabled={isBusy} onClick={onManualEntry} className="block mx-auto min-h-10 px-4 text-sm text-gray-300 underline underline-offset-4 disabled:opacity-50">手動輸入名片</button>}
+      </footer>
+      <input ref={galleryRef} type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" aria-label="從相簿選擇名片照片" />
+      <input ref={nativeCameraRef} type="file" accept="image/*" capture="environment" onChange={handleFiles} className="hidden" aria-label="使用手機相機拍攝名片" />
+    </section>
   );
 };
 

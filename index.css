@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+body { margin: 0; font-family: system-ui, -apple-system, 'Noto Sans TC', sans-serif; }
+button, a, input, select { -webkit-tap-highlight-color: transparent; }
+button { touch-action: manipulation; }
+button:focus-visible, a:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
+input, textarea, select { font-size: max(16px, 1em); }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fade-in-down { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+.animate-fade-in { animation: fade-in .2s ease-out; }
+.animate-fade-in-down { animation: fade-in-down .2s ease-out; }
+.animate-fade-out { animation: fade-out .3s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -14,6 +14,11 @@ export interface BusinessCard {
   imageDriveId?: string; // Google Drive File ID. NOT a full URL.
   isProcessing?: boolean;
   isError?: boolean;
+  errorMessage?: string;
+  needsReview?: boolean;
+  cloudAccount?: string; // Prevent one Google account's cards being uploaded to another.
+  lastSyncedAt?: number; // Last confirmed cloud version; detects deletions on another device.
+  lastSyncedSheetId?: string;
 }
 
 export enum AppView {

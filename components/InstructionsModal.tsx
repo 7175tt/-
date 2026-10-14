@@ -34,7 +34,8 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
               <li>點擊主畫面的 <span className="font-semibold text-blue-400">「掃描名片」</span> 按鈕。</li>
               <li>將名片完整對準畫面中的 <span className="font-semibold text-yellow-400">提示框線</span>。</li>
               <li>點擊圓形拍照鈕即可拍攝。系統只會擷取框線內的影像進行辨識。</li>
-              <li>每拍完一張，AI 就會 <span className="font-semibold text-green-400">立即在背景開始辨識</span>，您不需等待。</li>
+              <li>每拍完一張，照片會先保留在本機，AI 在背景依序辨識，您不需等待。</li>
+              <li>也可從相簿一次選多張，或使用「手機相機」拍攝；相機無法開啟時仍可手動新增。</li>
               <li>您可以無縫地繼續拍攝下一張名片。</li>
               <li>全部拍攝完成後，點擊左上角的 <span className="font-semibold text-blue-400">「完成」</span> 按鈕返回主畫面查看結果。</li>
             </ul>
@@ -42,22 +43,24 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
 
            <InstructionSection icon="cloud-check" title="雲端同步 (推薦)">
             <ul className="list-disc list-inside space-y-2 text-gray-400">
-              <li>點擊主畫面右上角的 <span className="font-semibold text-blue-400">「使用 Google 登入」</span> 按鈕。</li>
+              <li>點擊主畫面右上角的 <span className="font-semibold text-blue-400">「登入並自動同步」</span> 按鈕。</li>
               <li>授權後，您的所有名片資料（含照片）將會安全地儲存在您自己的 Google Sheets 和 Google Drive 中。</li>
               <li><strong className="text-green-400">資料位置：</strong>文字資料儲存在一個名為「名片管家資料庫」的 Google Sheet 中；照片則在「名片管家照片」資料夾。</li>
               <li>登入後，您可以從「資料管理」選單中找到「在 Sheets 中開啟」的選項，直接在瀏覽器新分頁中開啟您的資料庫。</li>
-              <li><strong className="text-yellow-400">重要：</strong>登入後，您的資料並不會馬上出現。請從「資料管理」選單中，選擇「手動與雲端同步」來下載您的雲端名片。</li>
-              <li><strong className="text-green-400">優點：</strong>跨裝置同步、永久備份、資料所有權完全歸您。</li>
-              <li>首次登入時，系統會詢問是否將您裝置上的現有名片上傳至雲端。</li>
+              <li>登入後會自動下載雲端名片，並上傳尚未綁定帳號的本機資料。修改與刪除也會自動同步。</li>
+              <li>離線或授權過期時，變更保留在本機；重新連線或登入後再同步。請查看頁面上方的儲存與同步狀態。</li>
+              <li>切換帳號不會把原帳號的名片自動上傳到新帳號。請定期下載完整備份。</li>
             </ul>
           </InstructionSection>
 
           <InstructionSection icon="search" title="管理與搜尋">
              <ul className="list-disc list-inside space-y-2 text-gray-400">
-              <li>點擊主畫面的 <span className="font-semibold text-blue-400">「篩選與搜尋」</span> 按鈕 <Icon name="search" className="h-4 w-4 inline-block mx-1" /> 來展開搜尋面板。</li>
+              <li>直接在主畫面的搜尋框輸入姓名、公司、電話、備註或照片中辨識到的文字；多個關鍵字可以用空格分開。</li>
               <li>您可以使用搜尋框左邊的下拉選單，針對「姓名」、「公司」等特定欄位進行更精準的搜尋。</li>
               <li>點擊名片上的 <Icon name="edit" className="h-4 w-4 inline-block mx-1" /> 圖示可修改資訊，點擊 <Icon name="trash" className="h-4 w-4 inline-block mx-1" /> 圖示可刪除名片。</li>
               <li>若名片有照片，點擊照片縮圖可以放大檢視。</li>
+              <li>辨識完成後請點「待確認」核對電話與 Email。失敗時可重新辨識或手動填寫，不必重新拍照。</li>
+              <li>點「存到通訊錄」下載聯絡人，或直接點電話、Email、地址以撥號、寄信或開啟地圖。</li>
             </ul>
           </InstructionSection>
 
@@ -66,7 +69,7 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
                 <li>若您未登入 Google，所有資料僅儲存在您的目前裝置和瀏覽器中。</li>
                 <li>點擊主畫面的 <span className="font-semibold text-blue-400">「資料管理」</span> 選單進行操作。</li>
                 <li><strong className="text-green-400">完整備份 (推薦):</strong> 選擇「建立完整備份」，會下載一個 `.json` 檔案，包含所有文字和照片。</li>
-                <li><strong className="text-green-400">從備份還原:</strong> 選擇「從備份還原」並選取 `.json` 檔案，即可還原資料。</li>
+                <li><strong className="text-green-400">從備份還原:</strong> 選取 `.json` 檔案後合併匯入，保留現有名片，不以備份覆寫。</li>
                 <li><strong>Excel 匯出/匯入:</strong> 提供僅備份/匯入 <span className="font-semibold">純文字資料</span> 的選項。</li>
             </ul>
           </InstructionSection>

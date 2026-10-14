@@ -1,17 +1,19 @@
 
-import * as XLSX from 'xlsx';
 import { BusinessCard } from '../types';
+import { MAX_BACKUP_BYTES, MAX_IMPORT_CARDS, parseCardBackup } from './backupValidation';
+export { downloadVCard as exportToVCard } from './contactExport';
 
 /**
  * Exports an array of business cards to an Excel .xlsx file.
  * @param cards The array of business cards to export.
  */
-export const exportToExcel = (cards: BusinessCard[]): void => {
+export const exportToExcel = async (cards: BusinessCard[]): Promise<void> => {
     if (cards.length === 0) return;
-    const headers = ['姓名', '公司', '職稱', '電話', 'Email', '地址', '備註', '建立時間'];
+    const XLSX = await import('xlsx');
+    const headers = ['姓名', '公司', '職稱', '電話', 'Email', '地址', '備註', '建立時間', '辨識原文'];
     const data = cards.map(card => [
         card.name, card.company, card.title, card.phone, card.email, card.address, card.notes || '',
-        new Date(card.timestamp).toLocaleString('zh-TW'),
+        new Date(card.timestamp).toISOString(), card.rawText || '',
     ]);
     const worksheet = XLSX.utils.aoa_to_sheet([headers, ...data]);
     const workbook = XLSX.utils.book_new();
@@ -35,7 +37,8 @@ export const exportToJson = (cards: BusinessCard[]): void => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    // Let mobile browsers consume the download before releasing its URL.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
 };
 
 /**
@@ -44,18 +47,24 @@ export const exportToJson = (cards: BusinessCard[]): void => {
  * @param existingCards The list of current cards to check against for duplicates.
  * @returns A promise that resolves to an array of new, non-duplicate business cards.
  */
-export const importFromExcel = (file: File, existingCards: BusinessCard[]): Promise<BusinessCard[]> => {
+export const importFromExcel = async (file: File, existingCards: BusinessCard[]): Promise<BusinessCard[]> => {
+    if (file.size > 10 * 1024 * 1024) throw new Error('Excel 檔案超過 10 MB，請分批匯入。');
+    const XLSX = await import('xlsx');
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
                 const data = e.target?.result;
-                const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                const workbook = XLSX.read(data, { type: 'array', cellDates: true, sheetRows: MAX_IMPORT_CARDS + 2 });
                 const sheetName = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[sheetName];
+                if (!worksheet) throw new Error('檔案中沒有工作表。');
+                const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+                if (range.e.c > 100) throw new Error('Excel 欄位過多，請使用名片管家匯出的格式。');
                 const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
 
                 if (jsonData.length < 2) throw new Error("檔案中無有效資料");
+                if (jsonData.length > MAX_IMPORT_CARDS + 1) throw new Error("一次最多可匯入 5,000 張名片，請分批匯入。");
 
                 const fileHeaders = jsonData[0];
                 const requiredHeaders = ['姓名', '公司'];
@@ -63,29 +72,42 @@ export const importFromExcel = (file: File, existingCards: BusinessCard[]): Prom
                    throw new Error(`檔案缺少必要的欄位：${requiredHeaders.join(', ')}`);
                 }
 
-                const headerMap: { [key: string]: number } = {};
+                const headerMap: { [key: string]: number } = Object.create(null);
                 fileHeaders.forEach((header: string, index: number) => { headerMap[header] = index; });
 
                 const importedCards: BusinessCard[] = [];
-                const existingCardIdentifiers = new Set(existingCards.map(c => `${c.name}|${c.company}|${c.email}`));
+                // Skip only repeated content. A changed phone, note or role must not disappear.
+                const identifierFor = (card: Omit<BusinessCard, 'id'>) =>
+                    JSON.stringify([card.name, card.company, card.title, card.phone, card.email, card.address, card.notes, card.rawText]
+                        .map(value => (value || '').normalize('NFKC').trim()));
+                const existingCardIdentifiers = new Set(existingCards.map(identifierFor));
 
                 for (let i = 1; i < jsonData.length; i++) {
                     const values = jsonData[i];
                     if (!values || values.length === 0) continue;
+                    const cell = (header: string) => {
+                        const value = String(values[headerMap[header]] ?? '').trim();
+                        if (value.length > 50_000) throw new Error(`第 ${i + 1} 列的 ${header} 內容過長，尚未匯入任何資料。`);
+                        return value;
+                    };
+                    const originalDate = values[headerMap['建立時間']];
+                    const timestamp = originalDate instanceof Date ? originalDate.getTime()
+                        : typeof originalDate === 'string' ? Date.parse(originalDate) : NaN;
 
                     const cardData: Omit<BusinessCard, 'id'> = {
-                        name: String(values[headerMap['姓名']] || ''),
-                        company: String(values[headerMap['公司']] || ''),
-                        title: String(values[headerMap['職稱']] || ''),
-                        phone: String(values[headerMap['電話']] || ''),
-                        email: String(values[headerMap['Email']] || ''),
-                        address: String(values[headerMap['地址']] || ''),
-                        notes: String(values[headerMap['備註']] || ''),
-                        timestamp: Date.now(),
-                        rawText: '',
+                        name: cell('姓名'),
+                        company: cell('公司'),
+                        title: cell('職稱'),
+                        phone: cell('電話'),
+                        email: cell('Email'),
+                        address: cell('地址'),
+                        notes: cell('備註'),
+                        timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+                        rawText: cell('辨識原文'),
                     };
 
-                    const identifier = `${cardData.name}|${cardData.company}|${cardData.email}`;
+                    if (![cardData.name, cardData.company, cardData.phone, cardData.email, cardData.address, cardData.notes, cardData.rawText].some(Boolean)) continue;
+                    const identifier = identifierFor(cardData);
                     if (!existingCardIdentifiers.has(identifier)) {
                         importedCards.push({ ...cardData, id: crypto.randomUUID() });
                         existingCardIdentifiers.add(identifier);
@@ -96,7 +118,8 @@ export const importFromExcel = (file: File, existingCards: BusinessCard[]): Prom
                 reject(error as Error);
             }
         };
-        reader.onerror = reject;
+        reader.onerror = () => reject(new Error('無法讀取檔案，請重新選擇檔案後再試。'));
+        reader.onabort = () => reject(new Error('檔案讀取已取消。'));
         reader.readAsArrayBuffer(file);
     });
 };
@@ -107,19 +130,18 @@ export const importFromExcel = (file: File, existingCards: BusinessCard[]): Prom
  * @returns A promise that resolves to an array of business cards from the backup.
  */
 export const importFromJson = (file: File): Promise<BusinessCard[]> => {
+    if (file.size > MAX_BACKUP_BYTES) return Promise.reject(new Error('備份檔案超過 50 MB，請使用較小的備份檔。'));
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
-                const parsedData = JSON.parse(e.target?.result as string);
-                if (!Array.isArray(parsedData)) throw new Error("無效的檔案格式");
-                // TODO: Add schema validation for parsedData items
-                resolve(parsedData as BusinessCard[]);
+                resolve(parseCardBackup(e.target?.result as string));
             } catch (error) {
                 reject(error as Error);
             }
         };
-        reader.onerror = reject;
+        reader.onerror = () => reject(new Error('無法讀取檔案，請重新選擇檔案後再試。'));
+        reader.onabort = () => reject(new Error('檔案讀取已取消。'));
         reader.readAsText(file);
     });
 };

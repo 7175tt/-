@@ -1,9 +1,8 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { BusinessCard, AppView, GoogleUser, SyncStatus } from './types';
-import { LOCAL_STORAGE_KEY } from './constants';
-import useLocalStorage from './hooks/useLocalStorage';
-import { extractTextFromImage, structureText } from './services/geminiService';
+import { useCardStore } from './hooks/useCardStore';
+import { scanBusinessCard, getScanReadiness } from './services/geminiService';
+import { applySyncResult, belongsToAccount, synchronizeCards } from './services/syncService';
 import * as GoogleApiService from './services/googleApiService';
 import * as fileService from './services/fileService';
 import CardList from './components/CardList';
@@ -11,535 +10,405 @@ import CardScanner from './components/CardScanner';
 import CardForm from './components/CardForm';
 import ConfirmationDialog from './components/ConfirmationDialog';
 import InstructionsModal from './components/InstructionsModal';
-import Icon from './components/Icon';
 import { GOOGLE_CLIENT_ID } from './config';
 
-declare var gapi: any;
+declare const gapi: any;
+const AUTH_KEY = 'KEEPER_GOOGLE_AUTH';
+const nextTime = (previous = 0) => Math.max(Date.now(), previous + 1);
+const blankCard = (): BusinessCard => ({ id: crypto.randomUUID(), name: '', company: '', title: '', phone: '', email: '', address: '', notes: '', rawText: '', timestamp: Date.now() });
+const errorText = (error: unknown) => error instanceof Error ? error.message : '請稍後再試。';
 
-const IS_CONFIG_ERROR = GOOGLE_CLIENT_ID === 'PLACEHOLDER_ENTER_YOUR_CLIENT_ID_HERE';
-
-const ConfigErrorBanner = () => (
-    <div className="fixed top-0 left-0 right-0 bg-yellow-500 text-black text-center p-3 font-bold flex items-center justify-center gap-2 z-[100] shadow-lg animate-fade-in-down">
-        <Icon name="exclamation-triangle" className="h-6 w-6" />
-        <span>Google 雲端同步功能未設定。請按 F12 查看主控台說明以完成設定。</span>
-    </div>
-);
-
-
-function App() {
-  const [localCards, setLocalCards] = useLocalStorage<BusinessCard[]>(LOCAL_STORAGE_KEY, []);
-  const [cloudCards, setCloudCards] = useState<BusinessCard[]>([]);
-  
-  const [currentView, setCurrentView] = useState<AppView>(AppView.LIST);
-  const [notification, setNotification] = useState<{type: 'error' | 'success', message: string} | null>(null);
-  const [editingCard, setEditingCard] = useState<BusinessCard | null>(null);
-  
-  // Dialog states
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+export default function App() {
+  const { state, update, ready, saving, blocked, error: storageError, retrySave } = useCardStore();
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const [view, setView] = useState(AppView.LIST);
+  const [editing, setEditing] = useState<BusinessCard | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [notice, setNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
-  const [showMigrationConfirm, setShowMigrationConfirm] = useState(false);
-  
-  const [jsonToRestore, setJsonToRestore] = useState<BusinessCard[] | null>(null);
-  const excelFileInputRef = useRef<HTMLInputElement>(null);
-  const jsonFileInputRef = useRef<HTMLInputElement>(null);
-
-  // Cloud Sync State
+  const [clearConfirm, setClearConfirm] = useState(false);
+  const [restoreCards, setRestoreCards] = useState<BusinessCard[] | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BusinessCard | null>(null);
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
-  const [isGapiReady, setIsGapiReady] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>(SyncStatus.UNINITIALIZED);
+  const [gapiReady, setGapiReady] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
+  const [googleAttempt, setGoogleAttempt] = useState(0);
+  const [syncStatus, setSyncStatus] = useState(SyncStatus.LOCAL);
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(null);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [scanReady, setScanReady] = useState<boolean | null>(null);
+  const [syncTick, setSyncTick] = useState(0);
+  const [queueTick, setQueueTick] = useState(0);
+  const [capturedCount, setCapturedCount] = useState(0);
+  const generation = useRef(0);
+  const syncing = useRef(false);
+  const syncRequested = useRef(false);
+  const scans = useRef(new Map<string, AbortController>());
+  const excelInput = useRef<HTMLInputElement>(null);
+  const jsonInput = useRef<HTMLInputElement>(null);
+  const userRef = useRef(googleUser);
+  userRef.current = googleUser;
+  const cards = googleUser ? state.cards.filter(c => belongsToAccount(c, googleUser.email)) : state.cards;
+  const notify = useCallback((type: 'error' | 'success', message: string) => setNotice({ type, message }), []);
 
-  const isCloudMode = !!googleUser;
-  // Always use localCards as the single responsive source of truth for seamless offline/online transitions.
-  const cards = localCards;
-  const setCards = setLocalCards;
-
-  // --- GOOGLE API & AUTH ---
-  const showNotification = (type: 'error' | 'success', message: string) => {
-    setNotification({ type, message });
-  };
-
-  const handleAuthCallback = useCallback(async (tokenResponse: any) => {
-    if (tokenResponse.error) {
-        // 'suppressed_by_user' is the normalized error for a failed silent sign-in attempt.
-        // We handle it gracefully by not showing an error and letting the user log in manually.
-        const isSilentSignInFailure = tokenResponse.error === 'suppressed_by_user';
-                                      
-        if (isSilentSignInFailure && syncStatus === SyncStatus.UNINITIALIZED) {
-            setSyncStatus(SyncStatus.LOCAL); // Silently transition to local mode
-            return;
-        }
-
-        let errorMessage = `登入失敗: ${tokenResponse.error_description || tokenResponse.error}.`;
-        if (tokenResponse.error === 'invalid_request' || tokenResponse.error === 'unauthorized_client') {
-            errorMessage = `登入授權失敗。這通常是 Google Cloud Console 中的 OAuth 設定有誤所導致。請確認：「已授權的 JavaScript 來源」已正確設定為您應用程式的網址 (${window.location.origin})。`;
-        } else if (tokenResponse.error === 'access_denied' || tokenResponse.error === 'popup_closed_by_user') {
-            errorMessage = '登入已取消或被使用者拒絕。';
-        }
-        showNotification('error', errorMessage);
-        setSyncStatus(SyncStatus.ERROR);
-        return;
-    }
-    try {
-        setSyncStatus(SyncStatus.SYNCING);
-        gapi.client.setToken(tokenResponse); // Explicitly set token for GAPI
-
-        const userInfo = await (await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-            headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-        })).json();
-
-        setGoogleUser({ name: userInfo.name, email: userInfo.email, picture: userInfo.picture });
-        showNotification('success', `歡迎，${userInfo.name || userInfo.email}！`);
-        
-        // On login, just prepare the cloud storage but don't download anything.
-        // The user will trigger the first sync manually.
-        setCloudCards([]); 
-        const { spreadsheetId: cloudSheetId } = await GoogleApiService.prepareCloudStorage();
-        setSpreadsheetId(cloudSheetId);
-        setSyncStatus(SyncStatus.READY_TO_SYNC);
-
-        // Save token and info into localStorage for persistent session
-        const expiresAt = Date.now() + (parseInt(tokenResponse.expires_in, 10) || 3600) * 1000;
-        const authData = {
-            tokenResponse,
-            user: { name: userInfo.name, email: userInfo.email, picture: userInfo.picture },
-            spreadsheetId: cloudSheetId,
-            expiresAt
-        };
-        localStorage.setItem('KEEPER_GOOGLE_AUTH', JSON.stringify(authData));
-
-    } catch (e: any) {
-        showNotification('error', `雲端同步時發生錯誤: ${e.message}`);
-        setSyncStatus(SyncStatus.ERROR);
-        GoogleApiService.signOut();
-        setGoogleUser(null);
-        localStorage.removeItem('KEEPER_GOOGLE_AUTH');
-    }
-  }, [syncStatus]);
-
-  // Use a ref to hold the latest callback. This prevents the initialization
-  // useEffect from re-running when the callback identity changes due to its dependencies.
-  const authCallbackRef = useRef(handleAuthCallback);
   useEffect(() => {
-    authCallbackRef.current = handleAuthCallback;
-  }, [handleAuthCallback]);
-
-  // Effect for Google service initialization. This should only run ONCE.
-  useEffect(() => {
-    if (IS_CONFIG_ERROR) {
-      console.group("👋 Google Cloud Sync - 設定提醒");
-      console.error("⛔️ 設定錯誤：尚未設定 Google Client ID。");
-      console.log("雲端同步功能目前已停用。若要啟用，請依照以下步驟操作：");
-      console.log("1. 前往 `src/config.ts` 或 `config.ts` 檔案。");
-      console.log("2. 依照檔案中的指示，填入您從 Google Cloud Console 取得的 Client ID。");
-      if (window.location.origin && window.location.origin !== 'null') {
-          console.log(
-          "3. 請務必將此來源網址新增至您 Google Cloud憑證的「已授權的 JavaScript 來源」清單中:",
-          window.location.origin
-        );
-      }
-      console.groupEnd();
-      return;
+    // Migration has already read the legacy account metadata; its bearer token
+    // is no longer needed in persistent browser storage.
+    if (ready && !storageError) {
+      try { localStorage.removeItem(AUTH_KEY); } catch { /* Storage may be restricted. */ }
     }
+  }, [ready, storageError]);
 
-    // A stable callback that delegates to the latest version in the ref.
-    const stableAuthCallback = (tokenResponse: any) => {
-      authCallbackRef.current(tokenResponse);
+  useEffect(() => {
+    if (notice?.type !== 'success') return;
+    const timer = setTimeout(() => setNotice(null), 4500);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const onOnline = () => { setOnline(true); setSyncTick(t => t + 1); };
+    const onOffline = () => setOnline(false);
+    const onFocus = () => { if (document.visibilityState === 'visible') setSyncTick(t => t + 1); };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    document.addEventListener('visibilitychange', onFocus);
+    const timer = setInterval(onFocus, 60_000);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      document.removeEventListener('visibilitychange', onFocus);
+      clearInterval(timer);
     };
+  }, []);
 
-    GoogleApiService.loadGapi(async () => {
-        GoogleApiService.initGis(stableAuthCallback);
-        setIsGapiReady(true);
-        
-        // Attempt to restore session from localStorage if valid
-        const storedAuthStr = localStorage.getItem('KEEPER_GOOGLE_AUTH');
-        if (storedAuthStr) {
-            try {
-                const storedAuth = JSON.parse(storedAuthStr);
-                if (storedAuth && storedAuth.expiresAt > Date.now()) {
-                    setSyncStatus(SyncStatus.SYNCING);
-                    gapi.client.setToken(storedAuth.tokenResponse);
-                    setGoogleUser(storedAuth.user);
-                    setSpreadsheetId(storedAuth.spreadsheetId);
-                    setSyncStatus(SyncStatus.READY_TO_SYNC);
-                    
-                    return;
-                }
-            } catch (err) {
-                console.error("Failed to restore Google session:", err);
-            }
-            localStorage.removeItem('KEEPER_GOOGLE_AUTH');
-        }
-        
-        setSyncStatus(SyncStatus.LOCAL);
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // <-- Empty dependency array ensures this effect runs only once on mount.
+  useEffect(() => {
+    const controller = new AbortController();
+    getScanReadiness(controller.signal).then(r => setScanReady(r.configured)).catch(() => {});
+    return () => controller.abort();
+  }, [online, syncTick]);
 
-  // Migration confirm is no longer needed since manual sync merges local cards implicitly.
-
-
-  const handleGoogleLogin = () => {
-    if (IS_CONFIG_ERROR) {
-      showNotification('error', "Google 雲端同步功能未設定。請參考主控台說明。");
+  const handleAuth = useCallback(async (token: any) => {
+    if (token.error) {
+      notify('error', 'Google 登入未完成，名片仍保留在本機。請重新登入。');
       return;
     }
-    if (isGapiReady) {
-      GoogleApiService.signInWithPopup();
-    } else {
-      showNotification('error', "Google 服務尚未準備就緒，請稍後再試。");
+    const currentGeneration = ++generation.current;
+    userRef.current = null;
+    setGoogleUser(null);
+    setSpreadsheetId(null);
+    try {
+      // Clear any previous account's cached Drive/Sheet IDs before applying its new token.
+      GoogleApiService.signOut();
+      gapi.client.setToken(token);
+      const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${token.access_token}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error('無法讀取 Google 帳號，請重新登入。');
+      const profile = await response.json();
+      if (typeof profile.email !== 'string' || !profile.email) throw new Error('無法確認登入帳號。');
+      if (generation.current !== currentGeneration) return;
+      const user = { name: profile.name || profile.email, email: profile.email, picture: profile.picture || '' };
+      userRef.current = user;
+      setGoogleUser(user);
+      setSyncStatus(SyncStatus.READY_TO_SYNC);
+      setGoogleError(null);
+      // Session-only tokens; do not keep bearer tokens in persistent local storage.
+      try {
+        sessionStorage.setItem(AUTH_KEY, JSON.stringify({ tokenResponse: token, user, expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000 }));
+        localStorage.removeItem(AUTH_KEY);
+      } catch { /* Login can work even when browser storage for the session is unavailable. */ }
+      notify('success', '已登入，正在自動同步此帳號與未同步的本機名片。');
+    } catch (error) {
+      if (generation.current !== currentGeneration) return;
+      setSyncStatus(SyncStatus.ERROR);
+      setGoogleUser(null);
+      GoogleApiService.signOut();
+      notify('error', errorText(error));
     }
-  };
+  }, [notify]);
+  const authRef = useRef(handleAuth);
+  authRef.current = handleAuth;
 
-  const handleGoogleLogout = () => {
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes('PLACEHOLDER')) {
+      setGoogleError('目前尚未啟用 Google 同步，可以先在本機整理名片。');
+      return;
+    }
+    let active = true;
+    (async () => {
+      try {
+        await GoogleApiService.loadGapi();
+        if (!active) return;
+        await GoogleApiService.initGis(token => authRef.current(token));
+        if (!active) return;
+        setGapiReady(true);
+        setGoogleError(null);
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(AUTH_KEY) || 'null');
+          if (saved?.expiresAt > Date.now() && typeof saved.user?.email === 'string' && saved.tokenResponse?.access_token) {
+            generation.current++;
+            GoogleApiService.signOut();
+            gapi.client.setToken(saved.tokenResponse);
+            userRef.current = saved.user;
+            setGoogleUser(saved.user);
+            setSyncStatus(SyncStatus.READY_TO_SYNC);
+          }
+        } catch { /* A malformed/expired session does not prevent local work. */ }
+      } catch {
+        if (active) {
+          setGapiReady(false);
+          setGoogleError('Google 暫時無法連線，本機名片不受影響。');
+        }
+      }
+    })();
+    return () => { active = false; };
+  }, [googleAttempt]);
+
+  const sync = useCallback(async (manual = false) => {
+    const user = userRef.current;
+    if (!user || !online || !ready || saving || storageError) return;
+    if (syncing.current) { syncRequested.current = true; return; }
+    syncing.current = true;
+    syncRequested.current = false;
+    const runGeneration = generation.current;
+    const snapshot = stateRef.current;
+    const isCurrent = () => runGeneration === generation.current && userRef.current?.email === user.email;
+    setSyncStatus(SyncStatus.SYNCING);
+    try {
+      // Persist account ownership before the first remote write. Otherwise a
+      // partial upload followed by switching accounts could copy private cards.
+      const unbound = snapshot.cards.filter(c => !c.cloudAccount);
+      if (unbound.length) {
+        const recoveredImages = new Map<string, string>();
+        for (const card of unbound.filter(c => c.imageDriveId && !c.imageBase64)) {
+          try { recoveredImages.set(card.id, await GoogleApiService.getImageAsBase64(card.imageDriveId!)); }
+          catch { throw new Error('有舊版名片的照片尚未下載，請登入原本的 Google 帳號再同步，或先備份文字資料。'); }
+          if (!isCurrent()) return;
+        }
+        if (!isCurrent()) return;
+        update(current => ({ ...current, cards: current.cards.map(card => !card.cloudAccount && unbound.some(c => c.id === card.id) ? {
+          ...card, cloudAccount: user.email,
+          imageBase64: card.imageBase64 || (unbound.some(original => original.id === card.id && original.timestamp === card.timestamp && original.imageDriveId === card.imageDriveId) ? recoveredImages.get(card.id) : undefined),
+          imageDriveId: undefined, lastSyncedAt: undefined, lastSyncedSheetId: undefined,
+        } : card) }));
+        setSyncStatus(SyncStatus.READY_TO_SYNC);
+        return;
+      }
+      const result = await synchronizeCards(snapshot, user.email, GoogleApiService, isCurrent);
+      if (!isCurrent()) return;
+      update(current => applySyncResult(current, snapshot, result, user.email));
+      setSpreadsheetId(result.spreadsheetId);
+      setSyncStatus(stateRef.current === snapshot ? SyncStatus.SYNCED : SyncStatus.READY_TO_SYNC);
+      if (manual) notify('success', '雲端同步完成。');
+    } catch (error) {
+      if (isCurrent()) {
+        setSyncStatus(SyncStatus.ERROR);
+        notify('error', `雲端同步未完成，變更仍保留在本機。${errorText(error)}`);
+      }
+    } finally {
+      syncing.current = false;
+      if (syncRequested.current) setSyncTick(t => t + 1);
+    }
+  }, [online, ready, saving, storageError, update, notify]);
+
+  useEffect(() => {
+    if (!googleUser || !ready || saving || storageError || !online) return;
+    const timer = setTimeout(() => void sync(), 1000);
+    return () => clearTimeout(timer);
+  }, [state, googleUser, ready, saving, storageError, online, syncTick, sync]);
+
+  useEffect(() => {
+    if (!ready) return;
+    // A small queue allows continuous capture without unbounded AI requests.
+    const candidates = state.cards.filter(c => c.isProcessing && !scans.current.has(c.id));
+    for (const card of candidates.slice(0, Math.max(0, 2 - scans.current.size))) {
+      const controller = new AbortController();
+      scans.current.set(card.id, controller);
+      (async () => {
+        try {
+          if (!online) throw new Error('目前離線，照片已保存。連線後請點選重新辨識。');
+          if (scanReady === false) throw new Error('AI 掃描尚未啟用，照片已保存。您可以先手動輸入。');
+          if (!card.imageBase64) throw new Error('找不到名片照片，請重新拍攝。');
+          const data = await scanBusinessCard(card.imageBase64, controller.signal);
+          if (controller.signal.aborted) return;
+          update(current => ({ ...current, cards: current.cards.map(c => c.id === card.id && c.isProcessing ? {
+            ...c, ...data, timestamp: nextTime(c.timestamp), isProcessing: false, isError: false, errorMessage: undefined, needsReview: true,
+          } : c) }));
+        } catch (error) {
+          if (!controller.signal.aborted) update(current => ({ ...current, cards: current.cards.map(c => c.id === card.id && c.isProcessing ? {
+            ...c, isProcessing: false, isError: true, errorMessage: errorText(error),
+          } : c) }));
+        } finally {
+          scans.current.delete(card.id);
+          // Completion can coincide with a cancelled/deleted card; advance the queue anyway.
+          setQueueTick(t => t + 1);
+        }
+      })();
+    }
+  }, [state.cards, ready, online, scanReady, update, queueTick]);
+
+  useEffect(() => () => { scans.current.forEach(controller => controller.abort()); scans.current.clear(); }, []);
+  useEffect(() => {
+    if (!ready || (!saving && !storageError && !state.cards.some(c => c.isProcessing))) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [ready, saving, storageError, state.cards]);
+
+  const capture = useCallback((imageBase64: string) => {
+    const card = { ...blankCard(), imageBase64, isProcessing: true, cloudAccount: userRef.current?.email };
+    update(current => ({ ...current, cards: [card, ...current.cards] }));
+    setCapturedCount(count => count + 1);
+  }, [update]);
+  const retry = (card: BusinessCard) => {
+    update(current => ({ ...current, cards: current.cards.map(c => c.id === card.id ? { ...c, isProcessing: true, isError: false, errorMessage: undefined } : c) }));
+  };
+  const addManual = () => {
+    setEditing({ ...blankCard(), cloudAccount: googleUser?.email });
+    setCreating(true);
+    setView(AppView.EDITING);
+  };
+  const edit = (card: BusinessCard) => {
+    setEditing(card);
+    setCreating(false);
+    setView(AppView.EDITING);
+  };
+  const saveCard = (card: BusinessCard) => {
+    scans.current.get(card.id)?.abort();
+    update(current => {
+      const existing = current.cards.find(c => c.id === card.id);
+      const photoChanged = card.imageBase64 !== editing?.imageBase64 || card.imageDriveId !== editing?.imageDriveId;
+      const saved = {
+        ...card, cloudAccount: existing?.cloudAccount || card.cloudAccount,
+        lastSyncedAt: existing?.lastSyncedAt,
+        lastSyncedSheetId: existing?.lastSyncedSheetId,
+        imageDriveId: photoChanged ? card.imageDriveId : existing?.imageDriveId || card.imageDriveId,
+        imageBase64: photoChanged ? card.imageBase64 : existing?.imageBase64 || card.imageBase64,
+        isError: false, isProcessing: false, needsReview: false, errorMessage: undefined,
+        timestamp: nextTime(existing?.timestamp ?? card.timestamp),
+      };
+      return { ...current, cards: existing ? current.cards.map(c => c.id === saved.id ? saved : c) : [saved, ...current.cards] };
+    });
+    setEditing(null);
+    setView(AppView.LIST);
+    notify('success', '名片已更新。');
+  };
+  const remove = (targets: BusinessCard[]) => {
+    const ids = new Set(targets.map(c => c.id));
+    for (const id of ids) scans.current.get(id)?.abort();
+    update(current => ({
+      cards: current.cards.filter(c => !ids.has(c.id)),
+      deletions: [...current.deletions, ...targets.flatMap(card => {
+        const account = card.cloudAccount || googleUser?.email;
+        return account && !current.deletions.some(d => d.id === card.id && d.account === account)
+          ? [{ id: card.id, account, deletedAt: Date.now() }] : [];
+      })],
+    }));
+    setDeleteTarget(null);
+    setClearConfirm(false);
+    notify('success', '名片已刪除；有雲端副本時會自動同步刪除。');
+  };
+  const logout = () => {
+    generation.current++;
+    userRef.current = null;
     GoogleApiService.signOut();
     setGoogleUser(null);
-    setCloudCards([]);
     setSpreadsheetId(null);
     setSyncStatus(SyncStatus.LOCAL);
-    localStorage.removeItem('KEEPER_GOOGLE_AUTH');
-    showNotification('success', '您已登出，現在使用本機儲存。');
+    try { sessionStorage.removeItem(AUTH_KEY); localStorage.removeItem(AUTH_KEY); } catch { /* Local data remains available. */ }
+    notify('success', '已登出，名片仍保留於這個瀏覽器。');
   };
-  
-  const handleForceSync = async () => {
-    if (!isCloudMode) {
-        showNotification('error', "請先登入 Google 帳號以進行雲端同步。");
-        return;
-    }
-    setSyncStatus(SyncStatus.SYNCING);
-    showNotification('success', '正在進行雲端雙向同步...');
-    try {
-        // 1. Delete records on Cloud Sheets that have been requested by user deletion log
-        const deletedLogStr = localStorage.getItem('KEEPER_DELETED_LOG') || '[]';
-        const deletedLog: string[] = JSON.parse(deletedLogStr);
-        if (deletedLog.length > 0) {
-            for (const idToDel of deletedLog) {
-                try {
-                    await GoogleApiService.deleteCardFromSheet(idToDel);
-                } catch (delErr) {
-                    console.error(`Deletion of ${idToDel} failed on Cloud:`, delErr);
-                }
-            }
-            localStorage.setItem('KEEPER_DELETED_LOG', '[]');
-        }
-
-        // 2. Fetch the current records from Google Sheets (lightweight JSON only)
-        const { cards: cloudData, spreadsheetId: cloudSheetId } = await GoogleApiService.getCloudCardsLight();
-        setSpreadsheetId(cloudSheetId);
-
-        // 3. Multi-directional merge
-        const mergedCards = [...localCards];
-
-        // Ensure we upload any local additions and updates to Sheets & Drive
-        for (let i = 0; i < mergedCards.length; i++) {
-            const localCard = mergedCards[i];
-            
-            // Check if this card exists on the cloud
-            const cloudMatch = cloudData.find(c => c.id === localCard.id);
-            
-            if (!cloudMatch) {
-                let driveId = localCard.imageDriveId;
-                if (!driveId && localCard.imageBase64) {
-                    driveId = await GoogleApiService.uploadImageToDrive(localCard.imageBase64, localCard.id);
-                }
-                const updatedLocalCard = { ...localCard, imageDriveId: driveId };
-                mergedCards[i] = updatedLocalCard;
-
-                const { imageBase64, ...cardForSheet } = updatedLocalCard;
-                await GoogleApiService.addCardsToSheet([cardForSheet]);
-            } else {
-                if (localCard.timestamp > cloudMatch.timestamp) {
-                    let driveId = localCard.imageDriveId;
-                    if (!driveId && localCard.imageBase64) {
-                        driveId = await GoogleApiService.uploadImageToDrive(localCard.imageBase64, localCard.id);
-                    }
-                    const updatedLocalCard = { ...localCard, imageDriveId: driveId };
-                    mergedCards[i] = updatedLocalCard;
-
-                    const { imageBase64, ...cardForSheet } = updatedLocalCard;
-                    await GoogleApiService.updateCardInSheet(cardForSheet);
-                }
-            }
-        }
-
-        // Import Cloud Cards that are not in Local
-        for (const cloudCard of cloudData) {
-            const localMatch = mergedCards.find(c => c.id === cloudCard.id);
-            const wasDeletedByClient = deletedLog.includes(cloudCard.id);
-
-            if (!localMatch && !wasDeletedByClient) {
-                mergedCards.push(cloudCard);
-            } else if (localMatch && cloudCard.timestamp > localMatch.timestamp) {
-                const updatedLocal: BusinessCard = {
-                    ...localMatch,
-                    ...cloudCard,
-                    imageBase64: cloudCard.imageDriveId === localMatch.imageDriveId ? localMatch.imageBase64 : undefined,
-                };
-                const idx = mergedCards.findIndex(c => c.id === cloudCard.id);
-                if (idx !== -1) mergedCards[idx] = updatedLocal;
-            }
-        }
-
-        setLocalCards(mergedCards);
-        setSyncStatus(SyncStatus.SYNCED);
-        showNotification('success', '同步成功！');
-    } catch (e: any) {
-        setSyncStatus(SyncStatus.ERROR);
-        showNotification('error', `同步失敗: ${e.message}`);
-    }
+  const login = () => {
+    try { GoogleApiService.signInWithPopup(); } catch (error) { notify('error', errorText(error)); }
   };
-
-  const handleMigrateToCloud = async () => {
-    setShowMigrationConfirm(false);
-    setSyncStatus(SyncStatus.SYNCING);
-    showNotification('success', '正在將本機資料上傳至雲端...');
-    try {
-        const cardsForSheet: Omit<BusinessCard, 'imageBase64'>[] = [];
-        const cardsForState: BusinessCard[] = [];
-
-        for (const card of localCards) {
-            const cardWithDriveId = { ...card };
-            if (card.imageBase64) {
-                const driveLink = await GoogleApiService.uploadImageToDrive(card.imageBase64, card.id);
-                cardWithDriveId.imageDriveId = driveLink;
-            }
-            cardsForState.push(cardWithDriveId);
-
-            const { imageBase64, ...rest } = cardWithDriveId;
-            cardsForSheet.push(rest);
-        }
-        
-        await GoogleApiService.addCardsToSheet(cardsForSheet);
-        setCloudCards(prev => [...prev, ...cardsForState]);
-        setLocalCards([]);
-        setSyncStatus(SyncStatus.SYNCED);
-        showNotification('success', '備份已成功遷移至雲端！');
-    } catch (e: any) {
-        setSyncStatus(SyncStatus.ERROR);
-        showNotification('error', `遷移失敗: ${e.message}`);
-    }
+  const importCards = (incoming: BusinessCard[]) => {
+    update(current => {
+      const ids = new Set(current.cards.map(c => c.id));
+      const additions = incoming.filter(c => !ids.has(c.id)).map(c => ({
+        ...c, imageDriveId: undefined, lastSyncedAt: undefined, lastSyncedSheetId: undefined, cloudAccount: googleUser?.email,
+        timestamp: nextTime(c.timestamp), isProcessing: false,
+      }));
+      // A restore can intentionally recover a deleted card. Cancel that pending deletion.
+      const restored = new Set(additions.map(c => c.id));
+      return { cards: [...additions, ...current.cards], deletions: current.deletions.filter(d => !restored.has(d.id) || d.account !== googleUser?.email) };
+    });
+    notify('success', '匯入完成；已有相同編號的名片保持原樣。');
   };
-
-  const handleScanNew = () => {
-    setCurrentView(AppView.SCANNING);
-  };
-
-  const handleFinishScan = () => {
-    setCurrentView(AppView.LIST);
-  };
-
-  const processSingleCard = useCallback(async (placeholderCard: BusinessCard) => {
-    try {
-        if (!placeholderCard.imageBase64) throw new Error("影像資料遺失。");
-        
-        const rawText = await extractTextFromImage(placeholderCard.imageBase64);
-        const structuredData = await structureText(rawText || '');
-
-        if (!structuredData) throw new Error("AI 無法解析名片資訊，請檢查照片清晰度。");
-
-        const processedCard: BusinessCard = {
-            ...placeholderCard,
-            ...structuredData,
-            isProcessing: false,
-        };
-        
-        setLocalCards(prev => prev.map(c => c.id === processedCard.id ? processedCard : c));
-
-    } catch (e: any) {
-        console.error(`處理卡片 ${placeholderCard.id} 時發生錯誤:`, e);
-        
-        let errorMessage = e.message || '請稍後再試。';
-        if (typeof errorMessage === 'string' && (errorMessage.includes('Proxying failed') || errorMessage.includes('API key not valid') || errorMessage.includes('Request payload size exceeds the limit'))) {
-            errorMessage = '無法連接至 AI 服務。\n這通常是 API 金鑰的「網站來源」限制設定有誤、網路連線問題、或照片檔案過大所致。';
-        } else if (typeof errorMessage === 'string' && errorMessage.includes('400')) {
-             errorMessage = 'AI 服務請求格式錯誤。\n可能是圖片品質不佳或損毀，請嘗試重新拍攝。';
-        } else if (typeof errorMessage === 'string' && errorMessage.toLowerCase().includes('quota')) {
-            errorMessage = 'AI 服務用量已達上限，請檢查您的 Google Cloud 帳戶。';
-        }
-
-        const errorCard: BusinessCard = {
-            ...placeholderCard,
-            isProcessing: false,
-            isError: true,
-            name: '辨識失敗',
-            company: errorMessage,
-        };
-        setLocalCards(prev => prev.map(c => c.id === placeholderCard.id ? errorCard : c));
-    }
-  }, [setLocalCards]);
-
-  const handleCaptureAndProcess = useCallback((base64Image: string) => {
-    const placeholderCard: BusinessCard = {
-      id: crypto.randomUUID(),
-      name: '正在辨識中...',
-      company: '請稍候',
-      title: '',
-      phone: '',
-      email: '',
-      address: '',
-      notes: '',
-      rawText: '',
-      timestamp: Date.now(),
-      imageBase64: base64Image,
-      isProcessing: true,
-    };
-  
-    // Add to list immediately, new cards at the top
-    setCards(prev => [placeholderCard, ...prev]);
-    
-    // Start processing in the background
-    processSingleCard(placeholderCard);
-  
-  }, [setCards, processSingleCard]);
-
-
-  const handleDeleteCard = async (id: string) => {
-    if (isCloudMode) {
-        try {
-            const deletedLogStr = localStorage.getItem('KEEPER_DELETED_LOG') || '[]';
-            const deletedLog: string[] = JSON.parse(deletedLogStr);
-            if (!deletedLog.includes(id)) {
-                deletedLog.push(id);
-                localStorage.setItem('KEEPER_DELETED_LOG', JSON.stringify(deletedLog));
-            }
-        } catch (e) {
-            console.error("Failed to append to deletion log:", e);
-        }
-    }
-    setLocalCards(prev => prev.filter(card => card.id !== id));
-    showNotification('success', '名片已刪除。');
-  };
-  
-  const handleStartEdit = (cardToEdit: BusinessCard) => {
-    // Prevent editing a card that failed processing
-    if (cardToEdit.isError) return;
-    setEditingCard(cardToEdit);
-    setCurrentView(AppView.EDITING);
-  };
-
-  const handleUpdateCard = async (updatedCard: BusinessCard) => {
-    const updatedWithTimestamp = {
-        ...updatedCard,
-        timestamp: Date.now()
-    };
-    setLocalCards(prev => prev.map(c => c.id === updatedWithTimestamp.id ? updatedWithTimestamp : c));
-    setEditingCard(null);
-    setCurrentView(AppView.LIST);
-    showNotification('success', '名片已儲存！');
-  };
-
-  const handleCancelEdit = () => {
-    setEditingCard(null);
-    setCurrentView(AppView.LIST);
-  };
-
-  const handleLazyImageLoaded = useCallback((cardId: string, base64: string) => {
-    setLocalCards(prev => prev.map(c => c.id === cardId ? { ...c, imageBase64: base64 } : c));
-  }, [setLocalCards]);
-  
-  const handleImportExcelClick = () => excelFileInputRef.current?.click();
-  
-  const handleExcelFileImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const importExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.target.value = '';
     if (!file) return;
-
     try {
-        const newCards = await fileService.importFromExcel(file, cards);
-        if (newCards.length > 0) {
-            setLocalCards(prev => [...newCards, ...prev]);
-            showNotification('success', `${newCards.length} 張新名片已成功匯入！本機已儲存。`);
-        } else {
-            showNotification('success', '沒有新的名片可匯入。');
-        }
-    } catch (error: any) {
-        showNotification('error', `匯入失败：${error.message}`);
-    } finally {
-        if(event.target) event.target.value = '';
-    }
+      const imported = await fileService.importFromExcel(file, stateRef.current.cards);
+      if (!imported.length) notify('success', '沒有新的名片可匯入。');
+      else importCards(imported);
+    } catch (error) { notify('error', errorText(error)); }
   };
-
-  const handleRestoreJsonClick = () => {
-    if (isCloudMode) return;
-    jsonFileInputRef.current?.click();
-  };
-  
-  const handleJsonFileImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const restore = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || isCloudMode) return;
+    event.target.value = '';
+    if (!file) return;
+    try { setRestoreCards(await fileService.importFromJson(file)); }
+    catch (error) { notify('error', errorText(error)); }
+  };
+  const backup = async () => {
     try {
-        const parsedData = await fileService.importFromJson(file);
-        setJsonToRestore(parsedData);
-        setShowRestoreConfirm(true);
-    } catch (error: any) {
-        showNotification('error', `還原失敗：${error.message}`);
-    } finally {
-        if(event.target) event.target.value = '';
-    }
+      const complete = [];
+      for (const card of cards) {
+        if (card.imageDriveId && !card.imageBase64) {
+          if (!googleUser || card.cloudAccount !== googleUser.email) throw new Error('部分照片只在雲端，請登入對應的 Google 帳號後建立完整備份。');
+          complete.push({ ...card, imageBase64: await GoogleApiService.getImageAsBase64(card.imageDriveId) });
+        } else complete.push(card);
+      }
+      fileService.exportToJson(complete);
+    } catch (error) { notify('error', `完整備份未完成：${errorText(error)}`); }
   };
+  const cacheImage = useCallback((id: string, base64: string) => {
+    update(current => ({ ...current, cards: current.cards.map(c => c.id === id && !c.imageBase64 ? { ...c, imageBase64: base64 } : c) }));
+  }, [update]);
 
-  const executeRestore = () => {
-    if (jsonToRestore) {
-        setCards(jsonToRestore);
-        showNotification('success', '資料已從備份還原！');
-    }
-    setShowRestoreConfirm(false);
-    setJsonToRestore(null);
-  };
-
-  const handleRequestClearAll = () => (cards.length > 0) && setShowClearConfirm(true);
-  
-  const executeClearAll = async () => {
-    if (isCloudMode) {
-        setSyncStatus(SyncStatus.SYNCING);
-        showNotification('success', '正在清除雲端資料...');
-        try {
-            // This is slow, but safe. Delete one by one.
-            for (const card of cards) {
-                await GoogleApiService.deleteCardFromSheet(card.id);
-            }
-            setSyncStatus(SyncStatus.SYNCED);
-        } catch (e: any) {
-            setSyncStatus(SyncStatus.ERROR);
-            showNotification('error', `清除雲端資料失敗: ${e.message}`);
-        }
-    }
-    setCards([]);
-    setShowClearConfirm(false);
-    showNotification('success', '所有名片資料已被清除。');
-  };
-
-  const renderView = () => {
-    switch (currentView) {
-      case AppView.SCANNING:
-        return <CardScanner onCaptureAndProcess={handleCaptureAndProcess} onFinish={handleFinishScan} isConfigError={IS_CONFIG_ERROR} />;
-      case AppView.EDITING:
-        return editingCard && <CardForm cardData={editingCard} onSave={handleUpdateCard} onCancel={handleCancelEdit} isConfigError={IS_CONFIG_ERROR} />;
-      case AppView.LIST:
-      default:
-        return <CardList cards={cards} onScanNew={handleScanNew} onDeleteCard={handleDeleteCard} onEditCard={handleStartEdit} onExportExcel={() => fileService.exportToExcel(cards)} onImportExcel={handleImportExcelClick} onExportJson={() => fileService.exportToJson(cards)} onRestoreJson={handleRestoreJsonClick} onClearAll={handleRequestClearAll} onShowInstructions={() => setShowInstructions(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={isGapiReady} onGoogleLogin={handleGoogleLogin} onGoogleLogout={handleGoogleLogout} onForceSync={handleForceSync} spreadsheetId={spreadsheetId} onLazyImageLoaded={handleLazyImageLoaded} />;
-    }
-  };
+  const statusText = storageError ? '尚未保存 · 請保留頁面並重試或下載備份'
+    : !online ? '目前離線 · 變更保留本機，連線後自動同步'
+    : saving ? '正在保存到這個裝置…'
+    : googleUser ? syncStatus === SyncStatus.SYNCING ? '正在同步到您的 Google 雲端…'
+      : syncStatus === SyncStatus.ERROR ? '雲端同步待重試 · 本機資料保留'
+      : syncStatus === SyncStatus.SYNCED ? '本機已儲存 · 已與 Google 同步' : '本機已儲存 · 等待自動同步'
+    : '本機已儲存 · 登入 Google 後自動同步';
 
   return (
-    <div className="h-screen w-screen bg-gray-900 text-white font-sans overflow-hidden">
-        {IS_CONFIG_ERROR && <ConfigErrorBanner />}
-        <div className={`h-full w-full ${IS_CONFIG_ERROR && (currentView === AppView.LIST || currentView === AppView.EDITING) ? 'pt-12' : ''}`}>
-          <input type="file" ref={excelFileInputRef} onChange={handleExcelFileImport} className="hidden" accept=".xlsx, .xls" />
-          <input type="file" ref={jsonFileInputRef} onChange={handleJsonFileImport} className="hidden" accept=".json" />
-          {notification && (
-              <div className={`fixed top-4 left-1/2 -translate-x-1/2 px-4 py-3 max-w-[90%] rounded-lg shadow-lg z-50 animate-fade-in-down text-center ${notification.type === 'error' ? 'bg-red-800' : 'bg-green-600'} ${IS_CONFIG_ERROR ? 'mt-12' : ''}`}>
-                  <p className="whitespace-pre-wrap">{notification.message}</p>
-              </div>
-          )}
-          {renderView()}
-          <ConfirmationDialog isOpen={showClearConfirm} onCancel={() => setShowClearConfirm(false)} onConfirm={executeClearAll} title="永久刪除所有資料" message="您確定要永久刪除所有名片資料嗎？此操作無法復原。在雲端模式下，這將會刪除您 Google Sheet 中的所有資料。" confirmButtonText="確定刪除" />
-          <ConfirmationDialog isOpen={showRestoreConfirm} onCancel={() => { setShowRestoreConfirm(false); setJsonToRestore(null); }} onConfirm={executeRestore} title="從備份還原資料" message="這將會用備份檔案的內容覆蓋您目前所有的本機名片資料。確定要繼續嗎？" confirmButtonText="確定還原" />
-          <ConfirmationDialog isOpen={showMigrationConfirm} onCancel={() => setShowMigrationConfirm(false)} onConfirm={handleMigrateToCloud} title="同步本機資料至雲端" message={`我們偵測到您有 ${localCards.length} 筆本機資料。要將它們上傳至您的 Google 雲端嗎？上傳後，本機資料將被清除以避免重複。`} confirmButtonText="是，開始上傳" />
-          {showInstructions && <InstructionsModal onClose={() => setShowInstructions(false)} />}
+    <div className="h-dvh min-h-0 w-full bg-gray-900 text-white flex flex-col overflow-hidden">
+      {notice && <div role={notice.type === 'error' ? 'alert' : 'status'} className={`fixed top-3 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-lg p-3 rounded-xl shadow-lg z-[80] flex gap-3 ${notice.type === 'error' ? 'bg-red-900' : 'bg-emerald-800'}`}>
+        <span className="flex-1 text-sm whitespace-pre-wrap">{notice.message}</span>
+        <button aria-label="關閉提示" onClick={() => setNotice(null)} className="px-2">×</button>
+      </div>}
+      {ready && storageError && <div role="alert" className="z-[70] bg-red-950 p-3 text-sm">{storageError} <button className="underline" onClick={retrySave}>重試保存</button> <button className="underline ml-3" onClick={() => void backup()}>先下載備份</button></div>}
+      {!ready ? <main className="flex-1 grid place-items-center p-6 text-center" role={storageError ? 'alert' : 'status'}><p className="max-w-sm text-gray-200">{storageError || (blocked ? '名片管家已在另一個分頁開啟。請關閉另一個分頁，此頁會自動接續。' : '正在讀取名片…')}</p></main> : <>
+        <div className="shrink-0 px-4 py-2 text-xs bg-gray-950 text-gray-300 flex items-center justify-between gap-2" role="status">
+          <span>{statusText}</span>
+          {googleUser && <div className="flex gap-3">
+            {syncStatus === SyncStatus.ERROR && gapiReady && <button onClick={login} className="text-blue-300 whitespace-nowrap">重新登入</button>}
+            <button onClick={() => void sync(true)} disabled={!online || saving || syncStatus === SyncStatus.SYNCING} className="text-blue-300 whitespace-nowrap disabled:opacity-50">立即同步</button>
+          </div>}
         </div>
+        {googleError && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">{googleError} <button className="underline ml-2" onClick={() => setGoogleAttempt(n => n + 1)}>重新連線 Google</button></div>}
+        {scanReady === false && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">AI 掃描尚未啟用；可以先拍照留存或手動輸入名片。</div>}
+        <input type="file" ref={excelInput} onChange={importExcel} className="hidden" accept=".xlsx,.xls" />
+        <input type="file" ref={jsonInput} onChange={restore} className="hidden" accept=".json" />
+        <main className="flex-1 min-h-0">
+          {view === AppView.SCANNING ? <CardScanner onCaptureAndProcess={capture} onFinish={() => setView(AppView.LIST)} isConfigError={false} pendingCount={state.cards.filter(c => c.isProcessing).length} capturedCount={capturedCount} onManualEntry={addManual} />
+            : view === AppView.EDITING && editing ? <CardForm cardData={editing} onSave={saveCard} onCancel={() => setView(AppView.LIST)} isConfigError={false} mode={creating ? 'create' : editing.needsReview || editing.isError ? 'review' : 'edit'} />
+            : <CardList cards={cards} onScanNew={() => { setCapturedCount(0); setView(AppView.SCANNING); }} onAddManual={addManual} onRetryCard={retry} onDeleteCard={id => setDeleteTarget(cards.find(c => c.id === id) || null)} onEditCard={edit}
+                onExportExcel={() => void fileService.exportToExcel(cards).catch(error => notify('error', `Excel 匯出未完成：${errorText(error)}`))} onImportExcel={() => excelInput.current?.click()} onExportJson={() => void backup()} onRestoreJson={() => jsonInput.current?.click()}
+                onClearAll={() => setClearConfirm(true)} onShowInstructions={() => setShowInstructions(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={gapiReady} onGoogleLogin={login} onGoogleLogout={logout}
+                onForceSync={() => void sync(true)} spreadsheetId={spreadsheetId} onLazyImageLoaded={cacheImage} canLoadCloudImages={!!googleUser} />}
+        </main>
+      </>}
+      <ConfirmationDialog isOpen={!!deleteTarget} onCancel={() => setDeleteTarget(null)} onConfirm={() => deleteTarget && remove([deleteTarget])} title="刪除這張名片？" message="這會刪除本機名片；若有雲端副本，也會在同步時刪除。" confirmButtonText="確定刪除" />
+      <ConfirmationDialog isOpen={clearConfirm} onCancel={() => setClearConfirm(false)} onConfirm={() => remove(cards)} title="刪除所有顯示的名片？" message="此操作無法復原。建議先建立完整備份，雲端刪除會在連線後同步。" confirmButtonText="確定刪除" />
+      <ConfirmationDialog isOpen={restoreCards !== null} onCancel={() => setRestoreCards(null)} onConfirm={() => { if (restoreCards) importCards(restoreCards); setRestoreCards(null); }} title="合併備份中的名片" message="保留目前的名片，只加入編號尚未存在的資料。備份中的雲端連結不會跨帳號使用。" confirmButtonText="確定還原" />
+      {showInstructions && <InstructionsModal onClose={() => setShowInstructions(false)} />}
     </div>
   );
 }
-
-export default App;

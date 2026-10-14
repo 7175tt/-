@@ -12,7 +12,7 @@
 //    （應用程式啟動時會在瀏覽器主控台顯示正確的來源網址）。
 // 5. 複製「用戶端 ID」並貼在下方，取代預設的預留位置字串。
 // =================================================================================
-export const GOOGLE_CLIENT_ID: string = "570663652971-og086jj64jja54dr8vqvvqqrpkcf0if7.apps.googleusercontent.com";
+export const GOOGLE_CLIENT_ID: string = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "570663652971-og086jj64jja54dr8vqvvqqrpkcf0if7.apps.googleusercontent.com";
 
 // Google Sheets 和 Drive 中使用的檔案/資料夾名稱。
 export const SPREADSHEET_NAME = "名片管家資料庫 (Business Card Keeper)";
