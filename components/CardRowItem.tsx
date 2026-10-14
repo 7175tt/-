@@ -8,11 +8,10 @@ interface CardRowItemProps {
   card: BusinessCard;
   onDelete: (id: string) => void;
   onEdit: (card: BusinessCard) => void;
-  onOpenContact?: (card: BusinessCard) => void;
   onRetryCard?: (card: BusinessCard) => void;
 }
 
-const CardRowItem: React.FC<CardRowItemProps> = ({ card, onDelete, onEdit, onOpenContact, onRetryCard }) => {
+const CardRowItem: React.FC<CardRowItemProps> = ({ card, onDelete, onEdit, onRetryCard }) => {
   if (card.isProcessing) {
     return <div className="px-4 py-4 flex items-center gap-3" role="status"><Spinner className="h-5 w-5" /><div><p className="font-semibold text-white">正在辨識中…</p><p className="text-sm text-gray-400">您可以繼續掃描下一張</p></div></div>;
   }
@@ -37,7 +36,6 @@ const CardRowItem: React.FC<CardRowItemProps> = ({ card, onDelete, onEdit, onOpe
       <div className="min-w-0">
         <h3 className="font-semibold text-white break-words">{card.name || card.company || '未命名聯絡人'}</h3>
         <p className="text-sm text-gray-300 break-words">{[card.company, card.title].filter(Boolean).join(' · ')}</p>
-        {!!(card.tags?.length || card.events?.length) && <p className="mt-2 text-xs text-blue-300 truncate" title={[...(card.events || []), ...(card.tags || [])].join(' · ')}>{[...(card.events || []), ...(card.tags || [])].join(' · ')}</p>}
         {card.needsReview && <button onClick={() => onEdit(card)} className="mt-1 px-2 py-1 rounded text-xs text-amber-300 bg-amber-500/10" aria-label={`確認 ${card.name || '這張名片'} 的辨識結果`}>待確認 · 檢查辨識結果</button>}
       </div>
       <div className="space-y-1 text-sm text-gray-300 min-w-0">
@@ -48,7 +46,6 @@ const CardRowItem: React.FC<CardRowItemProps> = ({ card, onDelete, onEdit, onOpe
       </div>
       <div className="flex items-center justify-between md:justify-end text-gray-400">
         <button onClick={() => downloadVCard([card])} className="min-h-11 flex gap-1 items-center px-2 text-blue-300 text-sm rounded-lg hover:bg-gray-700" aria-label={`將 ${card.name || '這張名片'} 存到通訊錄`}><Icon name="download" className="h-4 w-4" /><span className="md:hidden">存到通訊錄</span></button>
-          {onOpenContact && <button onClick={() => onOpenContact(card)} className="min-h-11 px-2 text-sm text-blue-300 rounded-lg hover:bg-gray-700" aria-label={`跟進與紀錄：${card.name || card.company}`}>跟進</button>}
         <div className="flex">
           <button onClick={() => onEdit(card)} className="p-3 hover:text-blue-300 rounded-lg hover:bg-gray-700" aria-label={`編輯 ${card.name} 的名片`}><Icon name="edit" className="h-5 w-5" /></button>
           <button onClick={() => onDelete(card.id)} className="p-3 hover:text-red-400 rounded-lg hover:bg-gray-700" aria-label={`刪除 ${card.name} 的名片`}><Icon name="trash" className="h-5 w-5" /></button>

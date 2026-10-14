@@ -31,8 +31,6 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
 
           <InstructionSection icon="camera" title="掃描名片">
             <ul className="list-disc list-inside space-y-2 text-gray-400">
-              <li>首次使用請到「工具 → AI 辨識設定」填入自己的 Gemini API key，可先測試再儲存。辨識使用該金鑰所屬專案的額度，與 Google 同步登入分開。</li>
-              <li>金鑰預設只保留於目前分頁，也可選擇在此裝置記住；可隨時在設定中清除。金鑰不會加入名片備份或雲端同步。</li>
               <li>點擊主畫面的 <span className="font-semibold text-blue-400">「掃描」</span> 按鈕。</li>
               <li>將名片完整對準畫面中的 <span className="font-semibold text-yellow-400">提示框線</span>。</li>
               <li>等文字對焦清楚，再點圓形拍照鈕。支援時會拍攝高解析度照片並保留完整畫面，框線用來協助對準名片。</li>
@@ -63,16 +61,6 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
               <li>若名片有照片，點擊照片縮圖可以放大檢視。</li>
               <li>辨識完成後請點「待確認」核對電話與 Email。失敗時可重新辨識或手動填寫，不必重新拍照。</li>
               <li>點「存到通訊錄」下載聯絡人，或直接點電話、Email、地址以撥號、寄信或開啟地圖。</li>
-            </ul>
-          </InstructionSection>
-
-          <InstructionSection icon="notes" title="活動、人脈與跟進">
-            <ul className="list-disc list-inside space-y-2 text-gray-400">
-              <li>參展前開啟「工具 → 活動模式」，填寫場合與標籤，之後拍攝、選照片或手動新增的名片自動套用。結束活動或重新整理後停止套用。</li>
-              <li>每張名片的「跟進」可編輯標籤、安排待辦與記錄談話。首頁及工具選單可開啟「待跟進」，查看今天或已逾期的事項。</li>
-              <li>需要手機通知時，使用「加入 Google 行事曆」，再於行事曆設定提醒；App 與行事曆的待辦各自管理。</li>
-              <li>「重複名片整理」提供欄位比較，必須選擇有差異的內容才會合併。原始名片保留在合併結果的「跟進與紀錄」中，可重新還原到列表。</li>
-              <li>上述資料一併保存在本機、Google 與完整 JSON 備份；Excel 包含目前顯示的名片、標籤與人脈紀錄，原始合併名片及照片請使用完整備份。</li>
             </ul>
           </InstructionSection>
 

@@ -27,7 +27,7 @@ READ_SNAPSHOT = """async () => new Promise((resolve, reject) => {
   };
 })"""
 MOCK = r"""(() => {
-  const headers = ['id', 'name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'timestamp', 'imageDriveId', 'rawText', 'contactMeta'];
+  const headers = ['id', 'name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'timestamp', 'imageDriveId', 'rawText'];
   const localCard = { id: 'local-one', name: '未綁定本機', company: '合成公司', title: '', phone: '', email: '', address: '', notes: '', rawText: '只用於整合測試', timestamp: 100 };
   if (!sessionStorage.getItem('sync-smoke-seeded')) {
     localStorage.setItem('business-cards-db', JSON.stringify([localCard]));
@@ -85,7 +85,6 @@ MOCK = r"""(() => {
           get: async args => {
             const account = checkOwner(args);
             if (args.range.endsWith('!K1')) return { result: { values: [['rawText']] } };
-            if (args.range.endsWith('!L1')) return { result: { values: [['contactMeta']] } };
             mock.events.push({ action: 'read', account });
             const values = structuredClone(mock.rows[account].slice(1));
             if (mock.holdNextRead) {

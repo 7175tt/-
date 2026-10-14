@@ -286,10 +286,3 @@ test('browsers without Web Locks fail closed instead of permitting unsafe snapsh
   await assert.rejects(storage.load(), /尚未取得/);
   await assert.rejects(storage.save({ cards: [card('unsafe')], deletions: [] }), /尚未取得/);
 });
-
-test('contact context, follow-ups and archived merge sources survive an IndexedDB reload', async () => {
-  const storage = await openStorage({ indexedDB: new IDBFactory(), legacyStorage: null });
-  const state: CardStoreState = { cards: [card('merged', { tags: ['供應商'], events: ['自動化展'], followUps: [{ id: 'task', text: '寄型錄', dueDate: '2026-10-16', createdAt: 10 }], interactions: [{ id: 'note', text: '想了解視覺檢測', occurredOn: '2026-10-14', createdAt: 20 }] }), card('original', { mergedIntoId: 'merged', imageBase64: 'b3JpZ2luYWw=' })], deletions: [] };
-  try { await storage.load(); await storage.save(state); assert.deepEqual(await storage.load(), state); }
-  finally { await storage.release(); }
-});

@@ -5,18 +5,10 @@ import CardRowItem from './CardRowItem';
 import Icon from './Icon';
 import GoogleAuth from './GoogleAuth';
 import { matchesCard } from '../services/cardSearch';
-import { pendingFollowUps, uniqueLabels } from '../services/contactMetadata';
 import { downloadVCard } from '../services/contactExport';
 
 interface CardListProps {
   cards: BusinessCard[];
-  onOpenContact?: (card: BusinessCard) => void;
-  onOpenFollowUps?: () => void;
-  onOpenDuplicates?: () => void;
-  onEventMode?: () => void;
-  onEndEvent?: () => void;
-  activityLabel?: string;
-  duplicateCount?: number;
   onScanNew: () => void;
   onAddManual?: () => void;
   onRetryCard?: (card: BusinessCard) => void;
@@ -28,7 +20,6 @@ interface CardListProps {
   onRestoreJson: () => void;
   onClearAll: () => void;
   onShowInstructions: () => void;
-  onOpenAiSettings?: () => void;
   googleUser: GoogleUser | null;
   syncStatus: SyncStatus;
   isGapiReady: boolean;
@@ -51,15 +42,12 @@ const categoryLabels: Record<string, string> = {
 
 const CardList: React.FC<CardListProps> = ({
   cards, onScanNew, onAddManual, onRetryCard, onDeleteCard, onEditCard, onExportExcel,
-  onImportExcel, onExportJson, onRestoreJson, onClearAll, onShowInstructions, onOpenAiSettings,
+  onImportExcel, onExportJson, onRestoreJson, onClearAll, onShowInstructions,
   googleUser, syncStatus, isGapiReady, onGoogleLogin, onGoogleLogout, onForceSync,
   spreadsheetId, onLazyImageLoaded, canLoadCloudImages = false,
   statusLabel, statusDescription, statusTone = 'normal', syncDisabled = false,
-  onOpenContact, onOpenFollowUps, onOpenDuplicates, onEventMode, onEndEvent, activityLabel, duplicateCount = 0,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [eventFilter, setEventFilter] = useState('');
   const [searchCategory, setSearchCategory] = useState('all');
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card');
   const [sortOrder, setSortOrder] = useState<'time-desc' | 'name-asc'>('time-desc');
@@ -87,25 +75,16 @@ const CardList: React.FC<CardListProps> = ({
   }, []);
 
   const filteredAndSortedCards = useMemo(() => cards
-    .filter(card => matchesCard(card, searchQuery, searchCategory) && (!tagFilter || card.tags?.includes(tagFilter)) && (!eventFilter || card.events?.includes(eventFilter)))
+    .filter(card => matchesCard(card, searchQuery, searchCategory))
     .sort((a, b) => sortOrder === 'name-asc'
       ? (a.name || '').localeCompare(b.name || '', 'zh-Hant')
-      : (b.timestamp || 0) - (a.timestamp || 0)), [cards, searchQuery, searchCategory, sortOrder, tagFilter, eventFilter]);
+      : (b.timestamp || 0) - (a.timestamp || 0)), [cards, searchQuery, searchCategory, sortOrder]);
   const exportableCards = filteredAndSortedCards.filter(card => !card.isProcessing && !card.isError);
-  const hasSearch = searchQuery.trim().length > 0 || !!tagFilter || !!eventFilter;
-  const followUpCount = cards.reduce((total, card) => total + pendingFollowUps(card).length, 0);
-  const tags = uniqueLabels(cards.flatMap(card => card.tags || [])).sort();
-  const events = uniqueLabels(cards.flatMap(card => card.events || [])).sort();
+  const hasSearch = searchQuery.trim().length > 0;
   const pendingCount = cards.filter(card => card.needsReview && !card.isProcessing && !card.isError).length;
 
   const menuItems: Array<{ label: string; action: () => void; disabled?: boolean; icon: string; danger?: boolean; title?: string }> = [
-    ...(onEventMode ? [{ label: activityLabel ? '調整活動模式' : '活動模式', action: onEventMode, icon: 'company' }] : []),
-    ...(onOpenFollowUps ? [{ label: `待跟進 (${followUpCount})`, action: onOpenFollowUps, icon: 'notes' }] : []),
-    ...(onOpenDuplicates ? [{ label: `重複名片整理 (${duplicateCount}${duplicateCount >= 200 ? '+' : ''})`, action: onOpenDuplicates, icon: 'squares-2x2' }] : []),
-    ...(onOpenAiSettings ? [{ label: 'AI 辨識設定', action: onOpenAiSettings, icon: 'adjustments-horizontal' }] : []),
     { label: '使用說明', action: onShowInstructions, icon: 'question-mark-circle' },
-    { label: '關於名片管家', action: () => { window.open('/about.html', '_blank', 'noopener,noreferrer'); }, icon: 'question-mark-circle' },
-    { label: '隱私與資料使用', action: () => { window.open('/privacy.html', '_blank', 'noopener,noreferrer'); }, icon: 'notes' },
     ...(googleUser ? [
       { label: '在 Sheets 中開啟', action: () => { if (spreadsheetId) window.open(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}`, '_blank', 'noopener,noreferrer'); }, disabled: !spreadsheetId, icon: 'table-cells' },
       { label: '立即同步', action: onForceSync, disabled: syncDisabled || syncStatus === SyncStatus.SYNCING, icon: 'sync' },
@@ -180,21 +159,10 @@ const CardList: React.FC<CardListProps> = ({
             <input id="card-search" type="search" placeholder="搜尋姓名、公司、電話或備註" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} autoComplete="off" className="w-full min-h-11 bg-gray-800 border border-gray-700 text-white rounded-lg py-2 pl-10 pr-3 focus:outline-none focus:ring-2 focus:ring-blue-500" />
             <Icon name="search" className="absolute left-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
           </div>
-          <button onClick={() => setShowSearchOptions(show => !show)} className={`min-h-11 min-w-11 flex items-center justify-center px-3 rounded-lg text-sm ${showSearchOptions || searchCategory !== 'all' || tagFilter || eventFilter ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 border border-gray-700'}`} aria-expanded={showSearchOptions} aria-controls="search-options" aria-label="顯示或隱藏搜尋選項"><Icon name="adjustments-horizontal" className="h-5 w-5" /></button>
+          <button onClick={() => setShowSearchOptions(show => !show)} className={`min-h-11 min-w-11 flex items-center justify-center px-3 rounded-lg text-sm ${showSearchOptions || searchCategory !== 'all' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 border border-gray-700'}`} aria-expanded={showSearchOptions} aria-controls="search-options" aria-label="顯示或隱藏搜尋選項"><Icon name="adjustments-horizontal" className="h-5 w-5" /></button>
         </div>
-        {(activityLabel || followUpCount > 0 || duplicateCount > 0) && <div className="flex items-center gap-3 text-xs overflow-x-auto">
-          {activityLabel && <button onClick={onEventMode} className="min-h-11 max-w-40 truncate shrink-0 text-blue-300" title={activityLabel}>活動：{activityLabel}</button>}
-          {activityLabel && <button onClick={onEndEvent} className="min-h-11 shrink-0 text-gray-400" aria-label="結束活動模式">結束</button>}
-          {followUpCount > 0 && <button onClick={onOpenFollowUps} className="min-h-11 shrink-0 text-amber-300">待跟進 {followUpCount}</button>}
-          {duplicateCount > 0 && <button onClick={onOpenDuplicates} className="min-h-11 shrink-0 text-blue-300">可能重複 {duplicateCount}{duplicateCount >= 200 ? '+' : ''} 組</button>}
-        </div>}
         {showSearchOptions && (
           <div id="search-options" className="flex flex-wrap items-center gap-2 mt-2">
-            <label className="sr-only" htmlFor="tag-filter">依標籤篩選</label>
-            <select id="tag-filter" value={tagFilter} onChange={event => setTagFilter(event.target.value)} className="min-h-11 max-w-full bg-gray-800 rounded-lg px-3 text-sm"><option value="">全部標籤</option>{tags.map(tag => <option key={tag}>{tag}</option>)}</select>
-            <label className="sr-only" htmlFor="event-filter">依場合篩選</label>
-            <select id="event-filter" value={eventFilter} onChange={event => setEventFilter(event.target.value)} className="min-h-11 max-w-full bg-gray-800 rounded-lg px-3 text-sm"><option value="">全部場合</option>{events.map(value => <option key={value}>{value}</option>)}</select>
-            {(tagFilter || eventFilter) && <button onClick={() => { setTagFilter(''); setEventFilter(''); }} className="min-h-11 px-2 text-sm text-blue-300">清除標籤與場合</button>}
             <label className="sr-only" htmlFor="search-category">選擇搜尋欄位</label>
             <select id="search-category" value={searchCategory} onChange={event => setSearchCategory(event.target.value)} className="min-h-11 max-w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 text-sm">
               {Object.entries(categoryLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
@@ -215,18 +183,18 @@ const CardList: React.FC<CardListProps> = ({
       <main className="flex-grow overflow-y-auto px-4 pb-6">
         {filteredAndSortedCards.length > 0 ? viewMode === 'card' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredAndSortedCards.map(card => <CardItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onOpenContact={onOpenContact} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
+            {filteredAndSortedCards.map(card => <CardItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
           </div>
         ) : (
           <div className="bg-gray-800/60 rounded-lg divide-y divide-gray-700">
-            {filteredAndSortedCards.map(card => <CardRowItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onOpenContact={onOpenContact} onRetryCard={onRetryCard} />)}
+            {filteredAndSortedCards.map(card => <CardRowItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} />)}
           </div>
         ) : hasSearch ? (
           <div className="text-center py-12">
             <Icon name="search" className="h-12 w-12 mx-auto text-gray-600 mb-3" />
             <h2 className="text-lg font-semibold text-white">找不到符合的名片</h2>
             <p className="text-gray-400 mt-2 text-sm">試試公司、電話末碼、備註或辨識原文中的字詞。</p>
-            <button onClick={() => { setSearchQuery(''); setSearchCategory('all'); setTagFilter(''); setEventFilter(''); }} className="mt-4 min-h-11 px-4 text-blue-300 hover:text-blue-200">清除搜尋條件</button>
+            <button onClick={() => { setSearchQuery(''); setSearchCategory('all'); }} className="mt-4 min-h-11 px-4 text-blue-300 hover:text-blue-200">清除搜尋條件</button>
           </div>
         ) : googleUser && syncStatus === SyncStatus.SYNCING ? (
           <div className="text-center py-12 text-gray-300" role="status"><Icon name="cloud-arrow-up" className="h-12 w-12 mx-auto mb-3 animate-pulse" />正在同步您的名片…</div>

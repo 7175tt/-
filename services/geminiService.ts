@@ -1,5 +1,4 @@
 import type { BusinessCard } from '../types';
-import { getGeminiKeySettings } from './geminiKeySettings';
 
 export type ScannedCard = Pick<BusinessCard, 'name' | 'company' | 'title' | 'phone' | 'email' | 'address' | 'notes' | 'rawText'>;
 
@@ -10,17 +9,7 @@ export class ScanRequestError extends Error {
   }
 }
 
-async function request(path: string, body?: object, signal?: AbortSignal, suppliedKey?: string): Promise<Record<string, unknown>> {
-  // Capture the selected credential once for this request. It is never placed
-  // in a URL, a card record, a response, or a shared backend configuration.
-  const apiKey = body ? (suppliedKey ?? getGeminiKeySettings().apiKey).trim() : '';
-  if (suppliedKey !== undefined && !/^[A-Za-z0-9_-]{20,256}$/.test(apiKey)) {
-    throw new ScanRequestError('API key 格式不正確，請重新複製完整金鑰。', 'INVALID_API_KEY', 400);
-  }
-  if (apiKey && typeof location !== 'undefined' && location.protocol !== 'https:'
-    && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
-    throw new ScanRequestError('請透過 HTTPS 開啟網站，再使用個人 API key。', 'HTTPS_REQUIRED');
-  }
+async function request(path: string, body?: object, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   let timedOut = false;
   const onAbort = () => controller.abort();
@@ -33,16 +22,15 @@ async function request(path: string, body?: object, signal?: AbortSignal, suppli
   try {
     const response = await fetch(`/api/gemini/${path}`, {
       method: body ? 'POST' : 'GET',
-      headers: body ? { 'Content-Type': 'application/json', ...(apiKey ? { 'x-gemini-api-key': apiKey } : {}) } : undefined,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
       cache: 'no-store',
-      redirect: 'error',
     });
     const data = await response.json().catch(() => null);
     if (!response.ok) {
       throw new ScanRequestError(
-        typeof data?.error === 'string' && (!apiKey || !data.error.includes(apiKey)) ? data.error : '掃描服務暫時無法使用，請檢查 AI 辨識設定後重試。',
+        typeof data?.error === 'string' ? data.error : '掃描服務暫時無法使用，請稍後重試。',
         typeof data?.code === 'string' ? data.code : 'SERVICE_UNAVAILABLE',
         response.status,
       );
@@ -81,15 +69,6 @@ export async function getScanReadiness(signal?: AbortSignal): Promise<{ configur
   const data = await request('status', undefined, signal);
   if (typeof data.configured !== 'boolean') throw new ScanRequestError('無法確認掃描服務狀態。', 'INVALID_RESPONSE');
   return { configured: data.configured };
-}
-
-/** A small real model request verifies this personal key; it can consume quota. */
-export async function checkGeminiApiKey(apiKey: string, signal?: AbortSignal): Promise<{ valid: true; model: string }> {
-  const data = await request('check-key', {}, signal, apiKey);
-  if (data.valid !== true || typeof data.model !== 'string' || !data.model) {
-    throw new ScanRequestError('金鑰測試回應不完整，請重試。', 'INVALID_RESPONSE');
-  }
-  return { valid: true, model: data.model };
 }
 
 export async function extractTextFromImage(base64Image: string, signal?: AbortSignal): Promise<string> {

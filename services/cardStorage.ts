@@ -1,6 +1,5 @@
 import type { BusinessCard } from '../types';
 import { LOCAL_STORAGE_KEY } from '../constants';
-import { readContactMetadata } from './contactMetadata';
 
 export interface CardDeletion {
   id: string;
@@ -53,7 +52,7 @@ function normalizeCards(value: unknown): BusinessCard[] {
     if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id) {
       throw new Error('名片資料格式無效；原始資料已保留。');
     }
-    const card: BusinessCard = { ...item, ...readContactMetadata(item) };
+    const card: BusinessCard = { ...item };
     for (const field of ['name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'rawText'] as const) {
       if (card[field] == null) card[field] = '';
       if (typeof card[field] !== 'string') throw new Error('名片欄位格式無效；原始資料已保留。');

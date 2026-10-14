@@ -1,17 +1,13 @@
 import { BusinessCard } from '../types';
 import { GOOGLE_CLIENT_ID, SPREADSHEET_NAME, CARD_SHEET_NAME, IMAGE_FOLDER_NAME } from '../config';
-import { decodeContactMetadata, encodeContactMetadata } from './contactMetadata';
 
 declare const gapi: any;
 declare const google: any;
 
 const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest', 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'];
-// Sheets accepts drive.file for this app's own files; access to every spreadsheet is unnecessary.
-// https://developers.google.com/workspace/sheets/api/scopes
-const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 // Keep the original A:J schema. OCR text is an additive, backwards-compatible column.
 const cardHeaders = ['id', 'name', 'company', 'title', 'phone', 'email', 'address', 'notes', 'timestamp', 'imageDriveId', 'rawText'] as const;
-const extendedHeaders = [...cardHeaders, 'contactMeta'];
 const sheetRange = `'${CARD_SHEET_NAME.replace(/'/g, "''")}'`;
 type SheetCard = Omit<BusinessCard, 'imageBase64'>;
 type Storage = { spreadsheetId: string; imageFolderId: string; session: number };
@@ -100,7 +96,6 @@ export async function initGis(callback: (tokenResponse: any) => void): Promise<v
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
     scope: SCOPES,
-    include_granted_scopes: false,
     callback,
     error_callback: (error: any) => callback({
       error: error.type || 'gis_error',
@@ -157,15 +152,6 @@ async function findOrCreateSpreadsheet(expected: number): Promise<string> {
         spreadsheetId: files[0].id, range: `${sheetRange}!K1`, valueInputOption: 'RAW', resource: { values: [['rawText']] },
       });
     }
-    const metadataHeader = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: files[0].id, range: `${sheetRange}!L1` });
-    const metadataName = metadataHeader.result.values?.[0]?.[0];
-    if (metadataName && metadataName !== 'contactMeta') throw new Error('試算表 L 欄已被使用，請將自訂資料移到其他欄後再同步；L 欄需保留給 contactMeta。');
-    if (!metadataName) {
-      const content = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: files[0].id, range: `${sheetRange}!L2:L` });
-      if (content.result.values?.some((row: unknown[]) => row.some(value => value !== '' && value != null))) throw new Error('試算表 L 欄已有資料，請先備份並移到其他欄，再重新同步。');
-      assertSession(expected);
-      await gapi.client.sheets.spreadsheets.values.update({ spreadsheetId: files[0].id, range: `${sheetRange}!L1`, valueInputOption: 'RAW', resource: { values: [['contactMeta']] } });
-    }
     return files[0].id;
   }
   const response = await gapi.client.sheets.spreadsheets.create({
@@ -175,7 +161,7 @@ async function findOrCreateSpreadsheet(expected: number): Promise<string> {
   if (!id) throw new Error('Google 未回傳試算表 ID。');
   assertSession(expected);
   await gapi.client.sheets.spreadsheets.values.update({
-    spreadsheetId: id, range: `${sheetRange}!A1`, valueInputOption: 'RAW', resource: { values: [extendedHeaders] },
+    spreadsheetId: id, range: `${sheetRange}!A1`, valueInputOption: 'RAW', resource: { values: [cardHeaders] },
   });
   return id;
 }
@@ -243,12 +229,12 @@ function rowToCard(row: unknown[]): BusinessCard {
   const timestamp = Number(card.timestamp);
   // A missing timestamp must not appear newer than valid local edits on every read.
   card.timestamp = Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : 0;
-  return { ...card, ...decodeContactMetadata(row[11]) };
+  return card;
 }
 
 async function readRows(storage: Storage): Promise<unknown[][]> {
   assertSession(storage.session);
-  const response = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: storage.spreadsheetId, range: `${sheetRange}!A2:L` });
+  const response = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: storage.spreadsheetId, range: `${sheetRange}!A2:K` });
   assertSession(storage.session);
   return response.result.values || [];
 }
@@ -368,14 +354,14 @@ async function upsertCards(cards: SheetCard[], storage: Storage): Promise<void> 
   const additions: unknown[][] = [];
   for (const card of unique.values()) {
     const matching = rows.flatMap((row, index) => String(row[0]) === card.id ? [index] : []);
-    const values = [...cardHeaders.map(header => card[header] ?? ''), encodeContactMetadata(card)];
+    const values = cardHeaders.map(header => card[header] ?? '');
     if (!matching.length) { additions.push(values); continue; }
     // A retried older request must not overwrite a later edit already on another device.
     if (matching.some(index => rowToCard(rows[index]).timestamp > card.timestamp)) continue;
     for (const index of matching) {
       assertSession(storage.session);
       await gapi.client.sheets.spreadsheets.values.update({
-        spreadsheetId: storage.spreadsheetId, range: `${sheetRange}!A${index + 2}:L${index + 2}`,
+        spreadsheetId: storage.spreadsheetId, range: `${sheetRange}!A${index + 2}:K${index + 2}`,
         valueInputOption: 'RAW', resource: { values: [values] },
       });
     }
@@ -383,7 +369,7 @@ async function upsertCards(cards: SheetCard[], storage: Storage): Promise<void> 
   if (additions.length) {
     assertSession(storage.session);
     await gapi.client.sheets.spreadsheets.values.append({
-      spreadsheetId: storage.spreadsheetId, range: `${sheetRange}!A1:L`, valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS', resource: { values: additions },
+      spreadsheetId: storage.spreadsheetId, range: `${sheetRange}!A1:K`, valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS', resource: { values: additions },
     });
   }
 }
