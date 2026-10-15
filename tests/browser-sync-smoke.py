@@ -202,10 +202,20 @@ async def main():
                     unchanged_since = time.monotonic()
             mark('unchanged cards settle without a continuous automatic sync loop')
 
+            # A person editing a Sheet cell does not update the app's timestamp column.
+            sheet_timestamp = await page.evaluate('window.__cloud.rows.a[1][8]')
+            writes_before = await page.evaluate('window.__cloud.writes.length')
+            await page.evaluate("window.__cloud.rows.a[1][1] = '郭芃宏'; document.dispatchEvent(new Event('visibilitychange'))")
+            await wait_snapshot(page, "state => state.cards[0].name === '郭芃宏'")
+            await expect(page.get_by_role('heading', name='郭芃宏', exact=True)).to_be_visible()
+            assert await page.evaluate('window.__cloud.rows.a[1][8]') == sheet_timestamp
+            assert await page.evaluate('window.__cloud.writes.length') == writes_before
+            mark('a direct Sheet name correction appears on return to the app without changing timestamps or writing stale text back')
+
             await page.evaluate('window.__cloud.holdNextRead = true')
             await tool_action(page, '立即同步')
             await page.wait_for_function('window.__cloud.readHeld')
-            await page.get_by_role('button', name='編輯 未綁定本機 的名片', exact=True).click()
+            await page.get_by_role('button', name='編輯 郭芃宏 的名片', exact=True).click()
             await page.get_by_label('姓名', exact=True).fill('同步期間修改')
             await page.get_by_role('button', name='儲存變更', exact=True).click()
             await wait_snapshot(page, "state => state.cards[0].name === '同步期間修改'")

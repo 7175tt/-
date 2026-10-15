@@ -46,7 +46,16 @@ export async function synchronizeCards(
       removed.push(local.id);
       continue;
     }
-    if (cloud && cloud.timestamp > local.timestamp) continue;
+    // Editing a Sheet cell does not update our timestamp column. When no local
+    // edit is pending, read the current row even when that timestamp is unchanged.
+    const localUnchanged = local.lastSyncedAt === local.timestamp && local.lastSyncedSheetId === remote.spreadsheetId;
+    if (cloud && (cloud.timestamp >= local.timestamp || localUnchanged)) {
+      result.set(local.id, {
+        ...local, ...cloud,
+        imageBase64: (local.imageDriveId || undefined) === (cloud.imageDriveId || undefined) ? local.imageBase64 : undefined,
+      });
+      continue;
+    }
     let card = { ...local, cloudAccount: account, lastSyncedAt: local.timestamp, lastSyncedSheetId: remote.spreadsheetId };
     if (!cloud || local.timestamp > cloud.timestamp) {
       // An unbound/imported Drive ID must never cross Google account boundaries.

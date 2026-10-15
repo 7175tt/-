@@ -148,11 +148,13 @@ async def main():
             assert next(c for c in snapshot['cards'] if c['id'] == 'cloud-edit')['imageDriveId'] == 'edit-photo'
             mark('editing automatically downloads its private Drive photo, caches it and preserves the cloud reference')
 
-            await article('cloud-view').get_by_role('button', name='載入名片照片', exact=True).click()
+            await article('cloud-view').scroll_into_view_if_needed()
+            await displayed_photo(article('cloud-view').get_by_alt_text('名片縮圖', exact=True))
+            await article('cloud-view').get_by_role('button', name='查看名片照片', exact=True).click()
             await displayed_photo(page.get_by_role('dialog', name='名片照片預覽').locator('img'))
             await page.get_by_role('button', name='關閉預覽', exact=True).click()
             await SYNC['wait_snapshot'](page, "state => state.cards.find(c => c.id === 'cloud-view')?.imageBase64")
-            mark('list-view cloud photo button downloads and opens the photo')
+            mark('visible list-view cloud photos download automatically and open without a separate load click')
 
             await open_edit('cloud-retry')
             await expect(page.get_by_role('status').filter(has_text='沒有這張照片的存取權')).to_be_visible()

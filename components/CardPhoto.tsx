@@ -21,6 +21,8 @@ const CardPhoto: React.FC<CardPhotoProps> = ({ card, canLoadCloudImages = false,
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  const [visible, setVisible] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const loadedRef = useRef(onImageLoaded);
   loadedRef.current = onImageLoaded;
@@ -32,8 +34,20 @@ const CardPhoto: React.FC<CardPhotoProps> = ({ card, canLoadCloudImages = false,
   const hasPhoto = !!(card.imageBase64 || card.imageDriveId);
 
   useEffect(() => {
+    if (full || visible || !hasPhoto || !containerRef.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '100px 0px' });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [full, visible, hasPhoto]);
+
+  useEffect(() => {
     setError(null);
-    if (imageUrl || !card.imageDriveId || !canLoadCloudImages || (!full && !request)) {
+    if (imageUrl || !card.imageDriveId || !canLoadCloudImages || (!full && !visible && !request)) {
       setLoading(false);
       return;
     }
@@ -52,7 +66,7 @@ const CardPhoto: React.FC<CardPhotoProps> = ({ card, canLoadCloudImages = false,
       if (!cancelled) setError(cause instanceof Error ? cause.message : '照片暫時無法載入，請檢查連線後重試。');
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [key, card.imageBase64, imageUrl, card.imageDriveId, canLoadCloudImages, full, request]);
+  }, [key, card.imageBase64, imageUrl, card.imageDriveId, canLoadCloudImages, full, visible, request]);
 
   useEffect(() => { setShowPreview(false); }, [key]);
   useEffect(() => {
@@ -84,19 +98,19 @@ const CardPhoto: React.FC<CardPhotoProps> = ({ card, canLoadCloudImages = false,
   };
 
   return (
-    <div className={full ? 'w-full' : 'w-20 shrink-0'}>
+    <div ref={containerRef} className={full ? 'w-full' : 'w-16 shrink-0'}>
       {imageUrl ? (
         <button type="button" onClick={() => setShowPreview(true)} aria-label="查看名片照片" className={full ? 'block w-full rounded-xl overflow-hidden border border-gray-800 bg-gray-900' : 'block rounded-md border border-gray-600 hover:border-blue-500'}>
-          <img src={imageUrl} alt={alt} onError={failImage} className={full ? 'w-full max-h-80 object-contain' : 'w-20 h-14 object-cover rounded-md'} loading={full ? 'eager' : 'lazy'} />
+          <img src={imageUrl} alt={alt} onError={failImage} className={full ? 'w-full max-h-80 object-contain' : 'w-16 h-11 object-cover rounded-md'} loading={full ? 'eager' : 'lazy'} />
         </button>
       ) : card.imageDriveId && canLoadCloudImages ? (
-        <button type="button" onClick={() => { setRequest(count => count + 1); setShowPreview(!full); }} disabled={loading} className={`${full ? 'w-full min-h-24 rounded-xl' : 'w-20 min-h-14 rounded-md'} flex flex-col items-center justify-center gap-1 border border-gray-600 text-gray-300 text-xs disabled:opacity-60`} aria-label={error || brokenUrl ? '重新載入名片照片' : '載入名片照片'}>
+        <button type="button" onClick={() => { setRequest(count => count + 1); setShowPreview(!full); }} disabled={loading} className={`${full ? 'w-full min-h-24 rounded-xl' : 'w-16 min-h-11 rounded-md'} flex flex-col items-center justify-center gap-0.5 border border-gray-600 text-gray-300 text-xs disabled:opacity-60`} aria-label={error || brokenUrl ? '重新載入名片照片' : '載入名片照片'}>
           {loading ? <Spinner className="h-5 w-5" /> : <Icon name="camera" className="h-5 w-5" />}
           {loading ? '載入中' : error || brokenUrl ? '重試照片' : '查看照片'}
         </button>
       ) : (
-        <div title={message || undefined} aria-label={message || undefined} className={`${full ? 'min-h-24 rounded-xl' : 'min-h-14 rounded-md'} flex flex-col items-center justify-center gap-1 border border-gray-700 text-gray-400 text-xs p-2`}>
-          <Icon name="camera" className="h-5 w-5" />{card.imageDriveId ? '登入後查看' : '照片無法顯示'}
+        <div title={message || undefined} aria-label={message || undefined} className={`${full ? 'min-h-24 rounded-xl' : 'min-h-11 rounded-md'} flex flex-col items-center justify-center gap-1 border border-gray-700 text-gray-400 text-xs p-1`}>
+          <Icon name="camera" className="h-5 w-5" />{card.imageDriveId ? '登入後查看' : '照片異常'}
         </div>
       )}
       {message && (full || !unavailable || !card.imageDriveId) && <p role="status" aria-label={message} title={message} className="mt-2 text-xs text-amber-200 break-words">{full ? message : shortMessage}</p>}

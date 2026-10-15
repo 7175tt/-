@@ -23,6 +23,40 @@ function cloud(remote: BusinessCard[] = []) {
   return { api, calls };
 }
 
+test('editing a name directly in Sheets updates the app without changing the timestamp column', async () => {
+  const local = card('sheet-edit', { name: '郭 芃 宏', cloudAccount: ACCOUNT, lastSyncedAt: 100, lastSyncedSheetId: 'sheet', imageDriveId: 'photo', imageBase64: 'cached-photo', needsReview: true });
+  const { api, calls } = cloud([card('sheet-edit', { name: '郭芃宏', title: '更新職稱', imageDriveId: 'photo' })]);
+  const before = state([local]);
+  const synced = await synchronizeCards(before, ACCOUNT, api);
+  const after = applySyncResult(before, before, synced, ACCOUNT);
+  assert.equal(after.cards[0].name, '郭芃宏');
+  assert.equal(after.cards[0].title, '更新職稱');
+  assert.equal(after.cards[0].imageBase64, 'cached-photo');
+  assert.equal(after.cards[0].needsReview, true);
+  assert.deepEqual(calls.map(call => call.action), ['read'], 'Reading a Sheet correction must not write the old text back');
+  assert.equal(applySyncResult(after, after, await synchronizeCards(after, ACCOUNT, api), ACCOUNT), after, 'Repeated reads must settle');
+});
+
+test('Sheet photo replacements invalidate the old cache even with an unchanged timestamp', async () => {
+  const before = state([card('photo-edit', { cloudAccount: ACCOUNT, imageDriveId: 'old-photo', imageBase64: 'old-cache', lastSyncedAt: 100, lastSyncedSheetId: 'sheet' })]);
+  const { api } = cloud([card('photo-edit', { imageDriveId: 'new-photo' })]);
+  const after = applySyncResult(before, before, await synchronizeCards(before, ACCOUNT, api), ACCOUNT);
+  assert.equal(after.cards[0].imageDriveId, 'new-photo');
+  assert.equal(after.cards[0].imageBase64, undefined);
+});
+
+test('unsent local edits still upload while unchanged contacts accept Sheet corrections', async () => {
+  const before = state([
+    card('pending', { name: 'Local edit', timestamp: 200, lastSyncedAt: 100, lastSyncedSheetId: 'sheet', cloudAccount: ACCOUNT }),
+    card('sheet-only', { name: 'Original', timestamp: 100, lastSyncedAt: 100, lastSyncedSheetId: 'sheet', cloudAccount: ACCOUNT }),
+  ]);
+  const { api, calls } = cloud([card('pending'), card('sheet-only', { name: 'Sheet correction' })]);
+  const after = applySyncResult(before, before, await synchronizeCards(before, ACCOUNT, api), ACCOUNT);
+  assert.equal(after.cards.find(card => card.id === 'pending')?.name, 'Local edit');
+  assert.equal(after.cards.find(card => card.id === 'sheet-only')?.name, 'Sheet correction');
+  assert.deepEqual(calls.filter(call => call.action === 'write').map(call => call.id), ['pending']);
+});
+
 test('sync applies remote additions without overwriting edits made during the request', () => {
   const original = card('edited', { cloudAccount: ACCOUNT });
   const snapshot = state([original]);

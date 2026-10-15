@@ -31,6 +31,7 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
 
           <InstructionSection icon="camera" title="掃描名片">
             <ul className="list-disc list-inside space-y-2 text-gray-400">
+              <li>首次使用請到「工具 → AI 辨識設定」填入自己的 Gemini API key，可先測試再儲存。也可勾選在此裝置記住金鑰；金鑰不會加入名片備份或 Google 同步。</li>
               <li>點擊主畫面的 <span className="font-semibold text-blue-400">「掃描」</span> 按鈕。</li>
               <li>將名片完整對準畫面中的 <span className="font-semibold text-yellow-400">提示框線</span>。</li>
               <li>等文字對焦清楚，再點圓形拍照鈕。支援時會拍攝高解析度照片並保留完整畫面，框線用來協助對準名片。</li>
@@ -48,6 +49,7 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
               <li><strong className="text-green-400">資料位置：</strong>文字資料儲存在一個名為「名片管家資料庫」的 Google Sheet 中；照片則在「名片管家照片」資料夾。</li>
               <li>登入後，您可以從「工具」選單中找到「在 Sheets 中開啟」的選項，直接在瀏覽器新分頁中開啟您的資料庫。</li>
               <li>登入後會自動下載雲端名片，並上傳尚未綁定帳號的本機資料。修改與刪除也會自動同步。</li>
+              <li>直接在 Google Sheet 修改文字後，回到工具或按「立即同步」即可讀取修改，不需要自行更動 timestamp 欄。</li>
               <li>離線或授權過期時，變更保留在本機；重新連線或登入後再同步。請查看頁面上方的儲存與同步狀態。</li>
               <li>切換帳號不會把原帳號的名片自動上傳到新帳號。請定期下載完整備份。</li>
             </ul>
@@ -56,6 +58,7 @@ const InstructionsModal: React.FC<InstructionsModalProps> = ({ onClose }) => {
           <InstructionSection icon="search" title="管理與搜尋">
              <ul className="list-disc list-inside space-y-2 text-gray-400">
               <li>直接在主畫面的搜尋框輸入姓名、公司、電話、備註或照片中辨識到的文字；多個關鍵字可以用空格分開。</li>
+              <li>照片在進入畫面時自動載入，點縮圖可放大。卡片先顯示主要聯絡資訊，點「詳細」可展開完整文字、地址及備註。</li>
               <li>點搜尋框右邊的篩選按鈕，針對「姓名」、「公司」等欄位搜尋，或調整排序；切換卡片／列表檢視則在「工具」中。</li>
               <li>點擊名片上的 <Icon name="edit" className="h-4 w-4 inline-block mx-1" /> 圖示可修改資訊，點擊 <Icon name="trash" className="h-4 w-4 inline-block mx-1" /> 圖示可刪除名片。</li>
               <li>若名片有照片，點擊照片縮圖可以放大檢視。</li>

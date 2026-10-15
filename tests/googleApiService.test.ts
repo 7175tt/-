@@ -48,6 +48,27 @@ test('an empty photo response is not cached as a usable image', async () => {
   await assert.rejects(api.getImageAsBase64('empty-photo'), /照片內容為空/);
 });
 
+test('automatic photo downloads share requests and never exceed four concurrent transfers', async () => {
+  const responses: Array<() => void> = [];
+  let active = 0, peak = 0, started = 0;
+  globalThis.fetch = () => new Promise<Response>(resolve => {
+    started++; active++; peak = Math.max(peak, active);
+    responses.push(() => { active--; resolve(new Response('{}', { status: 404 })); });
+  });
+  const pending = Array.from({ length: 9 }, (_, i) => api.getImageAsBase64(`photo-${i}`));
+  pending.push(api.getImageAsBase64('photo-0'));
+  const settled = Promise.allSettled(pending);
+  assert.equal(started, 4);
+  while (started < 9 || responses.length) {
+    responses.splice(0).forEach(respond => respond());
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  const result = await settled;
+  assert.equal(peak, 4);
+  assert.equal(started, 9, 'Two viewers of the same photo share the transfer');
+  assert.ok(result.every(item => item.status === 'rejected'));
+});
+
 beforeEach(() => {
   api.signOut();
   rows = [headers, toRow(makeCard('first')), toRow(makeCard('second')), toRow(makeCard('last'))];

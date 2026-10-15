@@ -18,6 +18,9 @@ let storageInitialization: Promise<Storage> | null = null;
 let session = 0;
 let mutationQueue: Promise<unknown> = Promise.resolve();
 const imageUploads = new Map<string, Promise<string>>();
+const imageDownloads = new Map<string, { controller: AbortController; promise: Promise<string> }>();
+const imageDownloadQueue: Array<() => void> = [];
+let activeImageDownloads = 0;
 
 function apiError(error: any, action: string): Error {
   const status = error?.status ?? error?.result?.error?.code ?? error?.error?.code;
@@ -120,6 +123,8 @@ export function signOut() {
   storageInitialization = null;
   mutationQueue = Promise.resolve();
   imageUploads.clear();
+  imageDownloads.forEach(download => download.controller.abort());
+  imageDownloads.clear();
 }
 
 function escapeQuery(value: string) { return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
@@ -203,14 +208,41 @@ async function checkedResponse(response: Response, action: string): Promise<any>
   throw apiError({ status: response.status, message: body?.error?.message || response.statusText || `HTTP ${response.status}` }, action);
 }
 
+function queueImageDownload(operation: () => Promise<string>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      activeImageDownloads++;
+      operation().then(resolve, reject).finally(() => {
+        activeImageDownloads--;
+        imageDownloadQueue.shift()?.();
+      });
+    };
+    if (activeImageDownloads < 4) start();
+    else imageDownloadQueue.push(start);
+  });
+}
+
+/** Visible thumbnails share in-flight requests and download at most four at once. */
 export async function getImageAsBase64(fileId: string): Promise<string> {
+  const expected = session;
+  const key = JSON.stringify([expected, fileId]);
+  const current = imageDownloads.get(key);
+  if (current) return current.promise;
+  const controller = new AbortController();
+  const promise = queueImageDownload(() => downloadImage(fileId, expected, controller.signal)).finally(() => {
+    if (imageDownloads.get(key)?.promise === promise) imageDownloads.delete(key);
+  });
+  imageDownloads.set(key, { controller, promise });
+  return promise;
+}
+
+async function downloadImage(fileId: string, expected: number, signal: AbortSignal): Promise<string> {
   return withApiError('下載名片照片', async () => {
     if (!fileId) throw new Error('缺少照片 ID。');
-    const expected = session;
     assertSession(expected);
     const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
       headers: { Authorization: `Bearer ${accessToken()}` },
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
     });
     assertSession(expected);
     if (response.status === 401) throw new Error('Google 登入已到期，請重新登入後載入照片。');
