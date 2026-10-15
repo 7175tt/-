@@ -27,7 +27,7 @@ interface CardListProps {
   onGoogleLogout: () => void;
   onForceSync: () => void;
   spreadsheetId: string | null;
-  onLazyImageLoaded?: (id: string, base64: string) => void;
+  onLazyImageLoaded?: (card: BusinessCard, base64: string) => void;
   canLoadCloudImages?: boolean;
   statusLabel?: string;
   statusDescription?: string;
@@ -187,7 +187,7 @@ const CardList: React.FC<CardListProps> = ({
           </div>
         ) : (
           <div className="bg-gray-800/60 rounded-lg divide-y divide-gray-700">
-            {filteredAndSortedCards.map(card => <CardRowItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} />)}
+            {filteredAndSortedCards.map(card => <CardRowItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
           </div>
         ) : hasSearch ? (
           <div className="text-center py-12">

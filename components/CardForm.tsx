@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { BusinessCard } from '../types';
 import Icon from './Icon';
 import { imageFileToJpegBase64 } from '../utils/cardImage';
+import CardPhoto from './CardPhoto';
+import { isSameCardPhoto } from '../services/cardPhoto';
 
 interface CardFormProps {
   cardData: BusinessCard;
@@ -9,9 +11,11 @@ interface CardFormProps {
   onCancel: () => void;
   isConfigError: boolean;
   mode?: 'create' | 'review' | 'edit';
+  canLoadCloudImages?: boolean;
+  onLazyImageLoaded?: (card: BusinessCard, base64: string) => void;
 }
 
-const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfigError, mode = 'edit' }) => {
+const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfigError, mode = 'edit', canLoadCloudImages = false, onLazyImageLoaded }) => {
   const [formData, setFormData] = useState(cardData);
   const [error, setError] = useState<string | null>(null);
   const [isLoadingPhoto, setIsLoadingPhoto] = useState(false);
@@ -34,7 +38,11 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
     photoRequestRef.current++;
   }, [cardData.id]);
 
-  const imageUrl = formData.imageBase64 ? `data:image/jpeg;base64,${formData.imageBase64}` : null;
+  const hasPhoto = !!(formData.imageBase64 || formData.imageDriveId);
+  const cachePhoto = (source: BusinessCard, base64: string) => {
+    setFormData(current => isSameCardPhoto(current, source) ? { ...current, imageBase64: base64 } : current);
+    onLazyImageLoaded?.(source, base64);
+  };
   const isReview = mode === 'review' || !!cardData.isError;
   const heading = mode === 'create' ? '新增名片' : isReview ? '核對名片' : '編輯名片';
   const disabled = isSaving || isLoadingPhoto;
@@ -106,8 +114,8 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
         <input id="card-photo" type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*" aria-label="選擇名片照片" />
         <div className="mb-5">
           <p className="text-sm font-medium text-gray-300 mb-2">名片照片</p>
-          {imageUrl ? <div className="rounded-xl overflow-hidden border border-gray-800 bg-gray-900"><img src={imageUrl} alt="名片原始照片，可對照下方辨識內容" className="w-full max-h-80 object-contain" /></div> : formData.imageDriveId ? <div className="rounded-xl bg-gray-900 border border-gray-800 p-5 text-sm text-gray-400">照片已存於雲端，目前無法預覽。儲存文字不會刪除原有照片。</div> : <button type="button" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="w-full min-h-24 flex items-center justify-center gap-3 border-2 border-dashed border-gray-700 rounded-xl text-gray-400 disabled:opacity-50"><Icon name="camera" className="h-7 w-7" /><span>新增名片照片（選填）</span></button>}
-          {(imageUrl || formData.imageDriveId) && <div className="flex gap-3 mt-2"><button type="button" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="min-h-11 rounded-lg bg-gray-800 px-4 text-sm disabled:opacity-50">更換照片</button><button type="button" onClick={handleDeletePhoto} disabled={disabled} className="min-h-11 rounded-lg px-4 text-sm text-red-300 disabled:opacity-50">移除照片</button></div>}
+          {hasPhoto ? <CardPhoto card={formData} variant="full" alt="名片原始照片，可對照下方辨識內容" canLoadCloudImages={canLoadCloudImages} onImageLoaded={cachePhoto} /> : <button type="button" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="w-full min-h-24 flex items-center justify-center gap-3 border-2 border-dashed border-gray-700 rounded-xl text-gray-400 disabled:opacity-50"><Icon name="camera" className="h-7 w-7" /><span>新增名片照片（選填）</span></button>}
+          {hasPhoto && <div className="flex gap-3 mt-2"><button type="button" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="min-h-11 rounded-lg bg-gray-800 px-4 text-sm disabled:opacity-50">更換照片</button><button type="button" onClick={handleDeletePhoto} disabled={disabled} className="min-h-11 rounded-lg px-4 text-sm text-red-300 disabled:opacity-50">移除照片</button></div>}
           {isLoadingPhoto && <p role="status" className="text-sm text-blue-300 mt-2">正在準備照片…</p>}
         </div>
 

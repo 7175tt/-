@@ -21,6 +21,33 @@ let listOverride: ((args: any) => any) | undefined;
 let globals: any;
 const originalFetch = globalThis.fetch;
 
+test('photo downloads report expired login, missing permission and unavailable files', async () => {
+  for (const [status, message] of [[401, /登入已到期/], [403, /沒有這張照片的存取權/], [404, /找不到雲端照片/]] as const) {
+    globalThis.fetch = async (url, init) => {
+      assert.match(String(url), /\/drive\/v3\/files\/private-photo\?alt=media$/);
+      assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer test-only');
+      assert.ok(init?.signal, 'An unresponsive download must time out');
+      return new Response('{}', { status });
+    };
+    await assert.rejects(api.getImageAsBase64('private-photo'), message);
+  }
+});
+
+test('an account change during photo download discards the previous account response', async () => {
+  let respond!: (response: Response) => void;
+  globalThis.fetch = () => new Promise<Response>(resolve => { respond = resolve; });
+  const pending = api.getImageAsBase64('private-photo');
+  api.signOut();
+  token = { access_token: 'other-account' };
+  respond(new Response('image bytes', { headers: { 'Content-Type': 'image/jpeg' } }));
+  await assert.rejects(pending, /Google 帳號已變更/);
+});
+
+test('an empty photo response is not cached as a usable image', async () => {
+  globalThis.fetch = async () => new Response('', { headers: { 'Content-Type': 'image/jpeg' } });
+  await assert.rejects(api.getImageAsBase64('empty-photo'), /照片內容為空/);
+});
+
 beforeEach(() => {
   api.signOut();
   rows = [headers, toRow(makeCard('first')), toRow(makeCard('second')), toRow(makeCard('last'))];

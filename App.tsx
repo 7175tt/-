@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { BusinessCard, AppView, GoogleUser, SyncStatus } from './types';
 import { useCardStore } from './hooks/useCardStore';
 import { scanBusinessCard, getScanReadiness } from './services/geminiService';
+import { isSameCardPhoto } from './services/cardPhoto';
 import { applySyncResult, belongsToAccount, synchronizeCards } from './services/syncService';
 import * as GoogleApiService from './services/googleApiService';
 import * as fileService from './services/fileService';
@@ -365,8 +366,11 @@ export default function App() {
       fileService.exportToJson(complete);
     } catch (error) { notify('error', `完整備份未完成：${errorText(error)}`); }
   };
-  const cacheImage = useCallback((id: string, base64: string) => {
-    update(current => ({ ...current, cards: current.cards.map(c => c.id === id && !c.imageBase64 ? { ...c, imageBase64: base64 } : c) }));
+  const cacheImage = useCallback((source: BusinessCard, base64: string) => {
+    update(current => {
+      if (!current.cards.some(card => isSameCardPhoto(card, source))) return current;
+      return { ...current, cards: current.cards.map(card => isSameCardPhoto(card, source) ? { ...card, imageBase64: base64 } : card) };
+    });
   }, [update]);
 
   const statusText = storageError ? '尚未保存 · 請保留頁面並重試或下載備份'
@@ -409,7 +413,7 @@ export default function App() {
         <input type="file" ref={jsonInput} onChange={restore} className="hidden" accept=".json" />
         <main className="flex-1 min-h-0">
           {view === AppView.SCANNING ? <CardScanner onCaptureAndProcess={capture} onFinish={() => setView(AppView.LIST)} isConfigError={false} pendingCount={state.cards.filter(c => c.isProcessing).length} capturedCount={capturedCount} onManualEntry={addManual} />
-            : view === AppView.EDITING && editing ? <CardForm cardData={editing} onSave={saveCard} onCancel={() => setView(AppView.LIST)} isConfigError={false} mode={creating ? 'create' : editing.needsReview || editing.isError ? 'review' : 'edit'} />
+            : view === AppView.EDITING && editing ? <CardForm cardData={editing} onSave={saveCard} onCancel={() => setView(AppView.LIST)} isConfigError={false} mode={creating ? 'create' : editing.needsReview || editing.isError ? 'review' : 'edit'} canLoadCloudImages={!!googleUser && editing.cloudAccount === googleUser.email} onLazyImageLoaded={cacheImage} />
             : <CardList cards={cards} onScanNew={() => { setCapturedCount(0); setView(AppView.SCANNING); }} onAddManual={addManual} onRetryCard={retry} onDeleteCard={id => setDeleteTarget(cards.find(c => c.id === id) || null)} onEditCard={edit}
                 onExportExcel={() => void fileService.exportToExcel(cards).catch(error => notify('error', `Excel 匯出未完成：${errorText(error)}`))} onImportExcel={() => excelInput.current?.click()} onExportJson={() => void backup()} onRestoreJson={() => jsonInput.current?.click()}
                 onClearAll={() => setClearConfirm(true)} onShowInstructions={() => setShowInstructions(true)} googleUser={googleUser} syncStatus={syncStatus} isGapiReady={gapiReady} onGoogleLogin={login} onGoogleLogout={logout}

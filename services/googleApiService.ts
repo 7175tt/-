@@ -206,20 +206,32 @@ async function checkedResponse(response: Response, action: string): Promise<any>
 export async function getImageAsBase64(fileId: string): Promise<string> {
   return withApiError('下載名片照片', async () => {
     if (!fileId) throw new Error('缺少照片 ID。');
+    const expected = session;
+    assertSession(expected);
     const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
       headers: { Authorization: `Bearer ${accessToken()}` },
+      signal: AbortSignal.timeout(20_000),
     });
+    assertSession(expected);
+    if (response.status === 401) throw new Error('Google 登入已到期，請重新登入後載入照片。');
+    if (response.status === 403) throw new Error('目前的 Google 帳號或應用程式沒有這張照片的存取權，請確認已登入原本儲存照片的帳號並授權。');
+    if (response.status === 404) throw new Error('找不到雲端照片，檔案可能已移除，或尚未授權目前的應用程式讀取。');
     if (!response.ok) await checkedResponse(response, '下載名片照片');
     const blob = await response.blob();
-    return new Promise<string>((resolve, reject) => {
+    assertSession(expected);
+    if (!blob.size) throw new Error('照片內容為空。');
+    const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
         const result = typeof reader.result === 'string' ? reader.result.split(',')[1] : '';
         if (!result) reject(new Error('照片內容為空。')); else resolve(result);
       };
       reader.onerror = () => reject(new Error('無法讀取名片照片。'));
+      reader.onabort = () => reject(new Error('名片照片下載已中斷，請重試。'));
       reader.readAsDataURL(blob);
     });
+    assertSession(expected);
+    return base64;
   });
 }
 
