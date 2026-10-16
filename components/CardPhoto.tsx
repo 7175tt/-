@@ -89,7 +89,7 @@ const CardPhoto: React.FC<CardPhotoProps> = ({ card, canLoadCloudImages = false,
   const message = error || unavailable || (brokenUrl && !imageUrl && !loading ? '照片無法顯示，請重新載入或更換照片。' : null);
   const shortMessage = error?.includes('登入已到期') ? '登入已到期，請重新登入。'
     : error?.includes('存取權') ? '沒有照片存取權。'
-    : error?.includes('找不到雲端照片') ? '找不到照片或尚未授權。'
+    : error?.includes('找不到雲端照片') ? '原檔未能讀取。'
     : error ? '照片載入失敗，請重試。' : card.imageDriveId ? '請登入原本的帳號。' : '請在編輯中更換照片。';
   const failImage = () => {
     setBrokenUrl(imageUrl);
@@ -114,6 +114,7 @@ const CardPhoto: React.FC<CardPhotoProps> = ({ card, canLoadCloudImages = false,
         </div>
       )}
       {message && (full || !unavailable || !card.imageDriveId) && <p role="status" aria-label={message} title={message} className="mt-2 text-xs text-amber-200 break-words">{full ? message : shortMessage}</p>}
+      {error && card.imageDriveId && /^[A-Za-z0-9_-]{1,200}$/.test(card.imageDriveId) && <a href={`https://drive.google.com/file/d/${encodeURIComponent(card.imageDriveId)}/view`} target="_blank" rel="noopener noreferrer" className="block py-1 text-xs text-blue-300 underline" aria-label="在 Google Drive 查看原始照片">查看原檔 ↗</a>}
       {showPreview && imageUrl && (
         <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4" onClick={() => setShowPreview(false)} role="dialog" aria-modal="true" aria-label="名片照片預覽">
           <img src={imageUrl} alt={`${card.name || '聯絡人'} 的名片`} className="max-w-[90vw] max-h-[80dvh] object-contain rounded-lg" onError={failImage} onClick={event => event.stopPropagation()} />

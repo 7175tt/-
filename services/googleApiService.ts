@@ -240,11 +240,27 @@ async function downloadImage(fileId: string, expected: number, signal: AbortSign
   return withApiError('下載名片照片', async () => {
     if (!fileId) throw new Error('缺少照片 ID。');
     assertSession(expected);
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    const downloadSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
+    let response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {
       headers: { Authorization: `Bearer ${accessToken()}` },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      signal: downloadSignal,
     });
     assertSession(expected);
+    if ([403, 404].includes(response.status)) {
+      await response.body?.cancel();
+      // Legacy releases shared uploaded photos by link. A different OAuth project
+      // can lose drive.file access while the original shared file still exists.
+      // The server only reads already-public files and receives no credentials.
+      try {
+        const sharedPhoto = await fetch(`/api/drive/public-photo/${encodeURIComponent(fileId)}`, {
+          credentials: 'omit', redirect: 'error', signal: downloadSignal,
+        });
+        assertSession(expected);
+        if (sharedPhoto.ok && sharedPhoto.headers.get('content-type')?.startsWith('image/')) response = sharedPhoto;
+        else await sharedPhoto.body?.cancel();
+      } catch { /* Preserve the original Drive error when the shared link is unavailable. */ }
+      assertSession(expected);
+    }
     if (response.status === 401) throw new Error('Google 登入已到期，請重新登入後載入照片。');
     if (response.status === 403) throw new Error('目前的 Google 帳號或應用程式沒有這張照片的存取權，請確認已登入原本儲存照片的帳號並授權。');
     if (response.status === 404) throw new Error('找不到雲端照片，檔案可能已移除，或尚未授權目前的應用程式讀取。');

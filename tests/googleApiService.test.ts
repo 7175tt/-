@@ -24,7 +24,13 @@ const originalFetch = globalThis.fetch;
 test('photo downloads report expired login, missing permission and unavailable files', async () => {
   for (const [status, message] of [[401, /登入已到期/], [403, /沒有這張照片的存取權/], [404, /找不到雲端照片/]] as const) {
     globalThis.fetch = async (url, init) => {
-      assert.match(String(url), /\/drive\/v3\/files\/private-photo\?alt=media$/);
+      if (String(url).startsWith('/api/drive/')) {
+        assert.notEqual(status, 401, 'An expired login must not trigger a public fallback');
+        assert.equal(init?.credentials, 'omit');
+        assert.equal(init?.headers, undefined);
+        return new Response('{}', { status: 404 });
+      }
+      assert.match(String(url), /\/drive\/v3\/files\/private-photo\?alt=media&supportsAllDrives=true$/);
       assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer test-only');
       assert.ok(init?.signal, 'An unresponsive download must time out');
       return new Response('{}', { status });
@@ -51,7 +57,7 @@ test('an empty photo response is not cached as a usable image', async () => {
 test('automatic photo downloads share requests and never exceed four concurrent transfers', async () => {
   const responses: Array<() => void> = [];
   let active = 0, peak = 0, started = 0;
-  globalThis.fetch = () => new Promise<Response>(resolve => {
+  globalThis.fetch = url => String(url).startsWith('/api/drive/') ? Promise.resolve(new Response('{}', { status: 404 })) : new Promise<Response>(resolve => {
     started++; active++; peak = Math.max(peak, active);
     responses.push(() => { active--; resolve(new Response('{}', { status: 404 })); });
   });
@@ -67,6 +73,49 @@ test('automatic photo downloads share requests and never exceed four concurrent 
   assert.equal(peak, 4);
   assert.equal(started, 9, 'Two viewers of the same photo share the transfer');
   assert.ok(result.every(item => item.status === 'rejected'));
+});
+
+test('an old shared photo survives OAuth project access loss without changing its Drive reference', async t => {
+  const previousReader = (globalThis as any).FileReader;
+  (globalThis as any).FileReader = class {
+    result: string;
+    onload: () => void;
+    async readAsDataURL(blob: Blob) {
+      this.result = `data:image/jpeg;base64,${Buffer.from(await blob.arrayBuffer()).toString('base64')}`;
+      this.onload();
+    }
+  };
+  t.after(() => { (globalThis as any).FileReader = previousReader; });
+  const calls: string[] = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push(String(url));
+    if (calls.length === 1) return new Response('{}', { status: 404 });
+    assert.equal(String(url), '/api/drive/public-photo/old-photo');
+    assert.equal(options?.headers, undefined);
+    assert.equal(options?.credentials, 'omit');
+    assert.equal(options?.redirect, 'error');
+    return new Response('original bytes', { headers: { 'content-type': 'image/jpeg' } });
+  };
+  assert.equal(await api.getImageAsBase64('old-photo'), Buffer.from('original bytes').toString('base64'));
+  assert.equal(calls.length, 2);
+  assert.equal(events.length, 0, 'Recovery must not update file permissions or Sheet rows');
+});
+
+test('account switching during a legacy photo fallback rejects the previous account result', async () => {
+  let release!: (response: Response) => void;
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  globalThis.fetch = async url => {
+    if (String(url).startsWith('https://www.googleapis.com/')) return new Response('{}', { status: 404 });
+    started();
+    return new Promise<Response>(resolve => { release = resolve; });
+  };
+  const pending = api.getImageAsBase64('old-photo');
+  await ready;
+  api.signOut();
+  token = { access_token: 'other-account' };
+  release(new Response('original bytes', { headers: { 'content-type': 'image/jpeg' } }));
+  await assert.rejects(pending, /Google 帳號已變更/);
 });
 
 beforeEach(() => {

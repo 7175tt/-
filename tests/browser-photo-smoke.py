@@ -34,6 +34,7 @@ SEED = r"""(() => {
     card('cloud-retry', {imageDriveId: 'retry-photo'}),
     card('cloud-delayed', {imageDriveId: 'delayed-photo'}),
     card('cloud-view', {imageDriveId: 'view-photo'}),
+    card('legacy-shared', {imageDriveId: 'legacy-shared-photo'}),
   ];
   localStorage.setItem('business-cards-db', JSON.stringify(cards));
   window.__cloud.rows.a.push(...cards.map(c => window.__cloud.rows.a[0].map(header => c[header] ?? '')));
@@ -42,7 +43,7 @@ SEED = r"""(() => {
 
 async def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    checks, errors, requests = [], [], []
+    checks, errors, requests, public_requests = [], [], [], []
     retry_status = 403
     allow_cloud = True
     photo_bytes = b''
@@ -65,6 +66,8 @@ async def main():
                 assert route.request.headers.get('authorization') == 'Bearer test-token-a'
                 if not allow_cloud:
                     await route.abort()
+                elif file_id == 'legacy-shared-photo':
+                    await route.fulfill(status=404, json={'error': {'message': 'Old OAuth project file is not visible to drive.file'}})
                 elif file_id == 'retry-photo' and retry_status != 200:
                     if retry_status == 299:
                         await route.fulfill(status=200, content_type='text/html', body='This is not a photograph')
@@ -81,6 +84,15 @@ async def main():
                 await route.fulfill(json={'name': 'Synthetic account', 'email': 'a@example.invalid', 'picture': ''})
             elif parsed.netloc != urlsplit(BASE_URL).netloc:
                 await route.abort()
+            elif parsed.path.startswith('/api/drive/public-photo/'):
+                public_requests.append(parsed.path.rsplit('/', 1)[-1])
+                assert 'authorization' not in route.request.headers
+                assert 'x-gemini-api-key' not in route.request.headers
+                assert 'cookie' not in route.request.headers
+                if allow_cloud and public_requests[-1] == 'legacy-shared-photo':
+                    await route.fulfill(status=200, content_type='image/jpeg', body=photo_bytes)
+                else:
+                    await route.fulfill(status=404, json={'error': 'Original file is not publicly readable'})
             elif parsed.path == '/api/gemini/status':
                 await route.fulfill(json={'configured': True})
             else:
@@ -156,8 +168,16 @@ async def main():
             await SYNC['wait_snapshot'](page, "state => state.cards.find(c => c.id === 'cloud-view')?.imageBase64")
             mark('visible list-view cloud photos download automatically and open without a separate load click')
 
+            await article('legacy-shared').scroll_into_view_if_needed()
+            await displayed_photo(article('legacy-shared').get_by_alt_text('名片縮圖', exact=True))
+            snapshot = await SYNC['wait_snapshot'](page, "state => state.cards.find(c => c.id === 'legacy-shared')?.imageBase64")
+            assert next(c for c in snapshot['cards'] if c['id'] == 'legacy-shared')['imageDriveId'] == 'legacy-shared-photo'
+            assert requests.count('legacy-shared-photo') == 1 and public_requests.count('legacy-shared-photo') == 1
+            mark('legacy shared photo recovers automatically after Drive API 404 without changing its original reference or permissions')
+
             await open_edit('cloud-retry')
             await expect(page.get_by_role('status').filter(has_text='沒有這張照片的存取權')).to_be_visible()
+            await expect(page.get_by_role('link', name='在 Google Drive 查看原始照片')).to_have_attribute('href', 'https://drive.google.com/file/d/retry-photo/view')
             retry_count = requests.count('retry-photo')
             await page.wait_for_timeout(300)
             assert requests.count('retry-photo') == retry_count, 'Failures must wait for a manual retry'
@@ -186,11 +206,11 @@ async def main():
 
             allow_cloud = False
             await page.reload(wait_until='domcontentloaded')
-            for name in ['raw-local', 'data-url-local', 'cloud-edit', 'cloud-view', 'cloud-retry']:
+            for name in ['raw-local', 'data-url-local', 'cloud-edit', 'cloud-view', 'cloud-retry', 'legacy-shared']:
                 await displayed_photo(article(name).get_by_alt_text('名片縮圖', exact=True))
             mark('downloaded photos remain visible after reload when further Drive requests are blocked')
             await SYNC['tool_action'](page, '登出')
-            for name in ['cloud-edit', 'cloud-view', 'cloud-retry']:
+            for name in ['cloud-edit', 'cloud-view', 'cloud-retry', 'legacy-shared']:
                 await displayed_photo(article(name).get_by_alt_text('名片縮圖', exact=True))
                 await expect(article(name).get_by_role('status')).to_have_count(0)
             mark('cached photos remain usable after logout without misleading login warnings')
@@ -200,7 +220,7 @@ async def main():
             raise
         finally:
             delayed_release.set()
-            report = {'passed': checks, 'page_errors': errors, 'image_requests': requests}
+            report = {'passed': checks, 'page_errors': errors, 'image_requests': requests, 'public_photo_requests': public_requests}
             (OUTPUT / 'browser-photo-smoke.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
             await context.close()
             await browser.close()
