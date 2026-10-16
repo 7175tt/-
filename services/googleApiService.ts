@@ -3,6 +3,7 @@ import { GOOGLE_CLIENT_ID, SPREADSHEET_NAME, CARD_SHEET_NAME, IMAGE_FOLDER_NAME 
 
 declare const gapi: any;
 declare const google: any;
+import { rememberedGoogleEmail } from './googleSession';
 
 const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest', 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'];
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
@@ -13,6 +14,11 @@ type SheetCard = Omit<BusinessCard, 'imageBase64'>;
 type Storage = { spreadsheetId: string; imageFolderId: string; session: number };
 
 let tokenClient: any = null;
+let codeClient: any = null;
+let codeRequestPending = false;
+let codeRequestSequence = 0;
+let renewAccessToken: (() => Promise<void>) | null = null;
+export function setTokenRenewalHandler(handler: (() => Promise<void>) | null) { renewAccessToken = handler; }
 let gapiInitialization: Promise<void> | null = null;
 let storageInitialization: Promise<Storage> | null = null;
 let session = 0;
@@ -30,7 +36,13 @@ function apiError(error: any, action: string): Error {
 }
 
 async function withApiError<T>(action: string, operation: () => Promise<T>): Promise<T> {
-  try { return await operation(); } catch (error) { throw apiError(error, action); }
+  try { return await operation(); } catch (error: any) {
+    const status = error?.status ?? error?.result?.error?.code;
+    if (status === 401 && renewAccessToken) {
+      try { await renewAccessToken(); return await operation(); } catch (renewError) { throw apiError(renewError, action); }
+    }
+    throw apiError(error, action);
+  }
 }
 
 function accessToken(): string {
@@ -94,7 +106,7 @@ export function loadGapi(callback?: () => void | Promise<void>, onError?: (error
   return result;
 }
 
-export async function initGis(callback: (tokenResponse: any) => void): Promise<void> {
+export async function initGis(callback: (tokenResponse: any) => void, persistent?: { clientId: string; onCode: (response: any) => void }): Promise<void> {
   await waitForScript(() => typeof google !== 'undefined' && !!google.accounts?.oauth2, 'https://accounts.google.com/gsi/client');
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
@@ -105,11 +117,20 @@ export async function initGis(callback: (tokenResponse: any) => void): Promise<v
       error_description: error.type === 'popup_closed' ? '登入視窗已關閉。' : error.message || '無法開啟 Google 登入，請重試。',
     }),
   });
+  codeClient = persistent ? { requestCode: () => {
+    const sequence = ++codeRequestSequence;
+    google.accounts.oauth2.initCodeClient({
+      client_id: persistent.clientId, scope: SCOPES, ux_mode: 'popup',
+      callback: (response: any) => { if (codeRequestPending && sequence === codeRequestSequence) { codeRequestPending = false; persistent.onCode(response); } },
+      error_callback: (error: any) => { if (codeRequestPending && sequence === codeRequestSequence) { codeRequestPending = false; callback({ error: error.type || 'popup_error' }); } },
+    }).requestCode();
+  } } : null;
 }
 
 export function signInWithPopup() {
   if (!tokenClient) throw new Error('Google 登入尚未準備就緒，請重試。');
-  tokenClient.requestAccessToken({});
+  if (codeClient) { codeRequestPending = true; codeClient.requestCode(); }
+  else tokenClient.requestAccessToken({ ...(rememberedGoogleEmail() ? { login_hint: rememberedGoogleEmail(), prompt: '' } : {}) });
 }
 
 export function signInSilently() {
@@ -118,6 +139,8 @@ export function signInSilently() {
 }
 
 export function signOut() {
+  codeRequestPending = false;
+  codeRequestSequence++;
   if (typeof gapi !== 'undefined') gapi.client?.setToken(null);
   session += 1;
   storageInitialization = null;
@@ -261,7 +284,7 @@ async function downloadImage(fileId: string, expected: number, signal: AbortSign
       } catch { /* Preserve the original Drive error when the shared link is unavailable. */ }
       assertSession(expected);
     }
-    if (response.status === 401) throw new Error('Google 登入已到期，請重新登入後載入照片。');
+    if (response.status === 401) throw Object.assign(new Error('Google 登入已到期，請重新登入後載入照片。'), { status: 401 });
     if (response.status === 403) throw new Error('目前的 Google 帳號或應用程式沒有這張照片的存取權，請確認已登入原本儲存照片的帳號並授權。');
     if (response.status === 404) throw new Error('找不到雲端照片，檔案可能已移除，或尚未授權目前的應用程式讀取。');
     if (!response.ok) await checkedResponse(response, '下載名片照片');

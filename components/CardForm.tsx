@@ -38,7 +38,7 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
     photoRequestRef.current++;
   }, [cardData.id]);
 
-  const hasPhoto = !!(formData.imageBase64 || formData.imageDriveId);
+  const hasPhoto = !!(formData.imageBase64 || formData.imageLocalId || formData.imageDriveId);
   const cachePhoto = (source: BusinessCard, base64: string) => {
     setFormData(current => isSameCardPhoto(current, source) ? { ...current, imageBase64: base64 } : current);
     onLazyImageLoaded?.(source, base64);
@@ -88,7 +88,7 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
     try {
       const imageBase64 = await imageFileToJpegBase64(file);
       if (!mountedRef.current || request !== photoRequestRef.current) return;
-      setFormData(previous => ({ ...previous, imageBase64, imageDriveId: undefined }));
+      setFormData(previous => ({ ...previous, imageBase64, imageDriveId: undefined, imageLocalId: undefined }));
     } catch (cause) {
       if (mountedRef.current && request === photoRequestRef.current) setError(cause instanceof Error ? cause.message : '無法讀取照片，原有照片已保留。');
     } finally {
@@ -98,7 +98,7 @@ const CardForm: React.FC<CardFormProps> = ({ cardData, onSave, onCancel, isConfi
 
   const handleDeletePhoto = () => {
     photoRequestRef.current++;
-    setFormData(previous => ({ ...previous, imageBase64: undefined, imageDriveId: undefined }));
+    setFormData(previous => ({ ...previous, imageBase64: undefined, imageDriveId: undefined, imageLocalId: undefined }));
   };
 
   return (

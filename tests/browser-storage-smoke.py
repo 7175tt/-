@@ -32,7 +32,7 @@ INSTRUMENT = """(() => {
   };
 })()"""
 READ = """() => new Promise((resolve, reject) => {
-  const request = indexedDB.open('business-card-keeper', 1);
+  const request = indexedDB.open('business-card-keeper');
   request.onerror = () => reject(request.error);
   request.onsuccess = () => {
     const db = request.result;

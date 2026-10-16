@@ -109,7 +109,7 @@ async def main():
         async def displayed_photo(locator):
             await expect(locator).to_be_visible()
             await locator.evaluate('image => image.decode()')
-            assert await locator.evaluate('image => image.naturalWidth === 320 && image.naturalHeight === 200')
+            assert await locator.evaluate('image => image.naturalWidth > 0 && image.naturalWidth <= 320 && image.naturalHeight > 0')
 
         async def switch_view(name):
             await page.get_by_role('button', name='資料管理與設定', exact=True).click()
@@ -207,10 +207,12 @@ async def main():
             allow_cloud = False
             await page.reload(wait_until='domcontentloaded')
             for name in ['raw-local', 'data-url-local', 'cloud-edit', 'cloud-view', 'cloud-retry', 'legacy-shared']:
+                await article(name).scroll_into_view_if_needed()
                 await displayed_photo(article(name).get_by_alt_text('名片縮圖', exact=True))
             mark('downloaded photos remain visible after reload when further Drive requests are blocked')
             await SYNC['tool_action'](page, '登出')
             for name in ['cloud-edit', 'cloud-view', 'cloud-retry', 'legacy-shared']:
+                await article(name).scroll_into_view_if_needed()
                 await displayed_photo(article(name).get_by_alt_text('名片縮圖', exact=True))
                 await expect(article(name).get_by_role('status')).to_have_count(0)
             mark('cached photos remain usable after logout without misleading login warnings')

@@ -108,8 +108,21 @@ export function useCardStore(): {
     if (!ready || !hasLoaded.current || revision === 0) return;
     let active = true;
     setSaving(true);
-    void saveCardStore(current.current).then(
-      () => {
+    const snapshot = current.current;
+    void saveCardStore(snapshot).then(
+      (stored) => {
+        const sources = new Map(snapshot.cards.map(card => [card.id, card]));
+        const saved = new Map(stored.cards.map(card => [card.id, card]));
+        let changed = false;
+        const cards = current.current.cards.map(card => {
+          const compact = saved.get(card.id);
+          const source = sources.get(card.id);
+          if (!card.imageBase64 || !compact?.imageLocalId || source?.imageBase64 !== card.imageBase64 || source.cloudAccount !== card.cloudAccount || source.imageDriveId !== card.imageDriveId) return card;
+          changed = true;
+          const { imageBase64: _, ...metadata } = card;
+          return { ...metadata, imageLocalId: compact.imageLocalId };
+        });
+        if (changed) { current.current = { ...current.current, cards }; setState(current.current); }
         if (active && revision === latestRevision.current) {
           setSaving(false);
           setError(null);

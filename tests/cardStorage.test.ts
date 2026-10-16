@@ -48,8 +48,78 @@ class TestLocks {
 async function openStorage(options: CardStorageOptions) {
   const storage = createCardStorage({ locks: new TestLocks(), ...options });
   const lease = await storage.acquireLease();
-  return { ...storage, release: lease.release };
+  return { ...storage, loadMetadata: storage.load, load: async () => {
+    const state = await storage.load();
+    const cards = [];
+    for (const card of state.cards) {
+      const { imageLocalId, ...metadata } = card;
+      cards.push(imageLocalId ? { ...metadata, imageBase64: await storage.getPhoto(imageLocalId) } : metadata);
+    }
+    return { ...state, cards };
+  }, release: lease.release };
 }
+
+test('264 photos stay outside metadata and text edits do not rewrite photo payloads', async () => {
+  const storage = await openStorage({ indexedDB: new IDBFactory(), legacyStorage: null });
+  await storage.load();
+  const cards = Array.from({ length: 264 }, (_, i) => card(`photo-${i}`, { imageBase64: `original-${i}-` + 'A'.repeat(64 * 1024) }));
+  const compact = await storage.save({ cards, deletions: [] });
+  assert.ok(compact.cards.every(item => !item.imageBase64 && item.imageLocalId));
+  assert.ok(JSON.stringify(compact).length < 200_000);
+  assert.equal(await storage.getPhoto(compact.cards[263].imageLocalId!), cards[263].imageBase64);
+  await storage.saveThumbnail(compact.cards[0].imageLocalId!, 'data:image/jpeg;base64,synthetic-thumbnail');
+  const originalPut = IDBObjectStore.prototype.put;
+  const writes: string[] = [];
+  IDBObjectStore.prototype.put = function (...args) { writes.push(this.name); return originalPut.apply(this, args); };
+  try {
+    await storage.save({ ...compact, cards: compact.cards.map((item, i) => i ? item : { ...item, name: '只改文字' }) });
+    assert.deepEqual(writes, ['snapshots']);
+  } finally { IDBObjectStore.prototype.put = originalPut; }
+  assert.equal(await storage.getPhoto('thumbnail:' + compact.cards[0].imageLocalId!), 'data:image/jpeg;base64,synthetic-thumbnail');
+  const replacement = await storage.save({ ...compact, cards: compact.cards.map((item, i) => i ? item : { ...item, imageBase64: 'replacement' }) });
+  assert.equal(await storage.getPhoto(replacement.cards[0].imageLocalId!), 'replacement');
+  assert.equal(await storage.getPhoto(compact.cards[0].imageLocalId!), undefined);
+  assert.equal(await storage.getPhoto('thumbnail:' + compact.cards[0].imageLocalId!), undefined);
+  assert.equal(await storage.getPhoto(compact.cards[263].imageLocalId!), cards[263].imageBase64);
+});
+
+test('an existing version-one IndexedDB snapshot upgrades atomically with every original photo', async () => {
+  const indexedDB = new IDBFactory();
+  const old = { cards: [card('old-indexeddb', { imageBase64: 'old-original' })], deletions: [{ id: 'deleted', account: 'owner@example.invalid', deletedAt: 1 }] };
+  await new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open('upgrade-test', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('snapshots');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result; const tx = db.transaction('snapshots', 'readwrite');
+      tx.objectStore('snapshots').put({ version: 1, ...old }, 'current');
+      tx.oncomplete = () => { db.close(); resolve(); }; tx.onabort = () => reject(tx.error);
+    };
+  });
+  const storage = await openStorage({ indexedDB, databaseName: 'upgrade-test', legacyStorage: null });
+  const metadata = await storage.loadMetadata();
+  assert.equal(metadata.cards[0].imageBase64, undefined);
+  assert.equal(await storage.getPhoto(metadata.cards[0].imageLocalId!), 'old-original');
+  assert.deepEqual(metadata.deletions, old.deletions);
+  assert.deepEqual(await storage.load(), old);
+});
+
+test('photo write failure rolls back metadata and preserves the prior original', async () => {
+  const storage = await openStorage({ indexedDB: new IDBFactory(), legacyStorage: null });
+  await storage.load();
+  const saved = await storage.save({ cards: [card('photo', { imageBase64: 'original' })], deletions: [] });
+  const originalPut = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function (...args) {
+    if (this.name === 'photos') throw new DOMException('Full', 'QuotaExceededError');
+    return originalPut.apply(this, args);
+  };
+  try { await assert.rejects(storage.save({ cards: [card('photo', { imageBase64: 'replacement' })], deletions: [] })); }
+  finally { IDBObjectStore.prototype.put = originalPut; }
+  assert.deepEqual(await storage.loadMetadata(), saved);
+  assert.equal(await storage.getPhoto(saved.cards[0].imageLocalId!), 'original');
+  await assert.rejects(storage.save({ cards: [card('dangling', { imageLocalId: 'not-stored' })], deletions: [] }));
+  assert.deepEqual(await storage.loadMetadata(), saved);
+});
 
 test('migration commits cards and scoped pending deletions, preserving the original legacy backup', async () => {
   const previous = card('old', { imageDriveId: 'drive-photo', imageBase64: 'data:image/jpeg;base64,AAAA' });
@@ -197,7 +267,8 @@ test('a second client cannot read, normalize active scans, or overwrite the firs
   await first.release();
   const lease = await nextLease;
   const loaded = await second.load();
-  assert.deepEqual(loaded.cards, [finished]);
+  const { imageLocalId, ...metadata } = loaded.cards[0];
+  assert.deepEqual({ ...metadata, imageBase64: await second.getPhoto(imageLocalId!) }, finished);
   await second.save({ ...loaded, cards: [...loaded.cards, card('second-tab-addition')] });
   assert.deepEqual((await second.load()).cards.map(item => item.id), ['active-scan', 'second-tab-addition']);
   await lease.release();

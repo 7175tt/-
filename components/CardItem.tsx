@@ -32,7 +32,7 @@ const CardItem: React.FC<CardItemProps> = ({ card, onDelete, onEdit, onRetryCard
     return (
       <div className="bg-gray-800 rounded-lg p-3 border border-red-500/50">
         <div className="flex items-start gap-2">
-          {card.imageBase64 || card.imageDriveId ? <CardPhoto {...photoProps} alt="辨識未完成的名片" /> : <Icon name="exclamation-triangle" className="h-6 w-6 text-red-400 shrink-0" />}
+          {card.imageBase64 || card.imageLocalId || card.imageDriveId ? <CardPhoto {...photoProps} alt="辨識未完成的名片" /> : <Icon name="exclamation-triangle" className="h-6 w-6 text-red-400 shrink-0" />}
           <div className="min-w-0 flex-1"><h3 className="font-semibold text-red-300">名片辨識未完成</h3><p className="text-gray-300 text-xs mt-1 break-words">{card.errorMessage || '照片已保留，請重新辨識或手動填寫。'}</p></div>
         </div>
         <div className="flex flex-wrap items-center gap-2 mt-2">

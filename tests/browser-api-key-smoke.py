@@ -21,12 +21,18 @@ QUOTA = 'synthetic-quota-gemini-key-000000001'
 REPLACEMENT = 'synthetic-replacement-gemini-key-01'
 SECRETS = (VALID, INVALID, QUOTA, REPLACEMENT)
 READ_SNAPSHOT = """() => new Promise((resolve, reject) => {
-  const open = indexedDB.open('business-card-keeper', 1);
+  const open = indexedDB.open('business-card-keeper');
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
     const db = open.result;
-    const tx = db.transaction('snapshots', 'readonly');
+    const tx = db.transaction(['snapshots', 'photos'], 'readonly');
     const get = tx.objectStore('snapshots').get('current');
+    get.onsuccess = () => {
+      for (const card of get.result?.cards || []) if (card.imageLocalId) {
+        const photo = tx.objectStore('photos').get(card.imageLocalId);
+        photo.onsuccess = () => { card.imageBase64 = photo.result; };
+      }
+    };
     tx.oncomplete = () => { db.close(); resolve(get.result); };
   };
 })"""

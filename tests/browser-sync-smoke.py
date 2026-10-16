@@ -16,12 +16,19 @@ from playwright.async_api import async_playwright, expect
 BASE_URL = os.environ.get('BASE_URL', 'http://127.0.0.1:3100').rstrip('/')
 OUTPUT = Path(os.environ.get('TEST_RESULTS_DIR', 'test-results'))
 READ_SNAPSHOT = """async () => new Promise((resolve, reject) => {
-  const open = indexedDB.open('business-card-keeper', 1);
+  const open = indexedDB.open('business-card-keeper');
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
     const db = open.result;
-    const tx = db.transaction('snapshots', 'readonly');
+    const tx = db.transaction(db.objectStoreNames.contains('photos') ? ['snapshots', 'photos'] : ['snapshots'], 'readonly');
     const request = tx.objectStore('snapshots').get('current');
+    request.onsuccess = () => {
+      if (!db.objectStoreNames.contains('photos')) return;
+      for (const card of request.result?.cards || []) if (card.imageLocalId) {
+        const photo = tx.objectStore('photos').get(card.imageLocalId);
+        photo.onsuccess = () => { card.imageBase64 = photo.result; };
+      }
+    };
     tx.oncomplete = () => { db.close(); resolve(request.result); };
     tx.onabort = () => { db.close(); reject(tx.error); };
   };
@@ -49,7 +56,7 @@ MOCK = r"""(() => {
     return account;
   };
   const readSnapshot = async () => new Promise((resolve, reject) => {
-    const open = indexedDB.open('business-card-keeper', 1);
+    const open = indexedDB.open('business-card-keeper');
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const db = open.result;

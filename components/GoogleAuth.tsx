@@ -2,6 +2,7 @@ import React from 'react';
 import { GoogleUser, SyncStatus } from '../types';
 import Icon from './Icon';
 import Spinner from './Spinner';
+import { rememberedGoogleEmail } from '../services/googleSession';
 
 interface GoogleAuthProps {
   user: GoogleUser | null;
@@ -22,7 +23,7 @@ const GoogleAuth: React.FC<GoogleAuthProps> = ({ user, syncStatus, isGapiReady, 
         title={isDisabled ? "正在連接 Google 服務" : "登入後自動同步至您的 Google Sheets 與 Drive"}
       >
         <Icon name="google-logo" className="h-5 w-5" />
-        <span className="font-medium">{isDisabled ? "連接 Google…" : "登入並自動同步"}</span>
+        <span className="font-medium">{isDisabled ? "連接 Google…" : rememberedGoogleEmail() ? "繼續 Google 登入" : "登入並自動同步"}</span>
       </button>
     );
   }

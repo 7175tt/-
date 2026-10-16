@@ -42,6 +42,8 @@ export class CardStorageError extends Error {
 }
 
 const STORE = 'snapshots';
+const PHOTOS = 'photos';
+const THUMBNAIL = 'thumbnail:';
 const SNAPSHOT = 'current';
 const EMPTY = (): CardStoreState => ({ cards: [], deletions: [] });
 const INTERRUPTED_MESSAGE = '上次辨識尚未完成。照片已保留，請重新辨識或手動填寫。';
@@ -166,10 +168,11 @@ export function createCardStorage(options: CardStorageOptions = {}) {
         reject(new Error('此瀏覽器無法使用 IndexedDB。'));
         return;
       }
-      const request = factory.open(databaseName, 1);
+      const request = factory.open(databaseName, 2);
       let rejected = false;
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+        if (!request.result.objectStoreNames.contains(PHOTOS)) request.result.createObjectStore(PHOTOS);
       };
       request.onsuccess = () => {
         if (rejected) { request.result.close(); return; }
@@ -194,14 +197,50 @@ export function createCardStorage(options: CardStorageOptions = {}) {
     });
   }
 
-  function writeSnapshot(db: IDBDatabase, state: CardStoreState): Promise<void> {
+  async function writeSnapshot(db: IDBDatabase, state: CardStoreState): Promise<CardStoreState> {
+    const photos = new Map<string, string>();
+    const cards: BusinessCard[] = [];
+    for (const card of state.cards) {
+      if (!card.imageBase64) { cards.push({ ...card }); continue; }
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(card.imageBase64));
+      const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      const key = JSON.stringify([card.cloudAccount || '', card.id, hash]);
+      photos.set(key, card.imageBase64);
+      const { imageBase64: _, ...metadata } = card;
+      cards.push({ ...metadata, imageLocalId: key });
+    }
+    const compact = { cards, deletions: state.deletions };
+    const referenced = new Set(cards.map(card => card.imageLocalId).filter(Boolean));
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE, 'readwrite');
-      transaction.oncomplete = () => resolve();
+      const transaction = db.transaction([STORE, PHOTOS], 'readwrite');
+      transaction.oncomplete = () => resolve(compact);
       transaction.onabort = () => reject(transaction.error ?? new Error('本機儲存中斷；先前資料仍保留。'));
       transaction.onerror = () => { /* Wait for abort; a put success alone is not a durable commit. */ };
       try {
-        transaction.objectStore(STORE).put({ version: 1, ...state }, SNAPSHOT);
+        const photoStore = transaction.objectStore(PHOTOS);
+        const keys = photoStore.getAllKeys();
+        keys.onsuccess = () => {
+          try {
+            const existing = new Set(keys.result);
+            for (const key of referenced) if (!existing.has(key) && !photos.has(key)) throw new Error('本機原始照片尚未儲存，請保留頁面並重試。');
+            // During a large legacy upgrade, enqueue one original at a time so
+            // the browser does not clone hundreds of photo payloads at once.
+            const pending = [...photos].filter(([key]) => !existing.has(key));
+            let index = 0;
+            const writeNext = () => {
+              try {
+                const photo = pending[index++];
+                if (photo) photoStore.put(photo[1], photo[0]).onsuccess = writeNext;
+                else for (const key of keys.result) {
+                  const value = String(key);
+                  if (!referenced.has(value) && !(value.startsWith(THUMBNAIL) && referenced.has(value.slice(THUMBNAIL.length)))) photoStore.delete(key);
+                }
+              } catch (error) { transaction.abort(); reject(error); }
+            };
+            writeNext();
+          } catch (error) { transaction.abort(); reject(error); }
+        };
+        transaction.objectStore(STORE).put({ version: 2, ...compact }, SNAPSHOT);
       } catch (error) {
         transaction.abort();
         reject(error);
@@ -221,7 +260,7 @@ export function createCardStorage(options: CardStorageOptions = {}) {
         recoveredState = snapshot === undefined ? readLegacy() : normalizeState(snapshot);
         hasLoadedSnapshot = true;
         const interrupted = snapshot && (snapshot as CardStoreState).cards.some((card) => card.isProcessing);
-        if (snapshot === undefined || interrupted) await writeSnapshot(db, recoveredState);
+        if (snapshot === undefined || interrupted || recoveredState.cards.some(card => card.imageBase64)) recoveredState = await writeSnapshot(db, recoveredState);
         // Keep the old localStorage key intact as a recovery backup. Once this
         // transaction commits, future loads exclusively use the IDB snapshot.
         return recoveredState;
@@ -237,12 +276,39 @@ export function createCardStorage(options: CardStorageOptions = {}) {
         );
       } finally { db?.close(); }
     }),
-    save: (state: CardStoreState): Promise<void> => {
+    getPhoto: (key: string): Promise<string | undefined> => enqueue(async () => {
+      const db = await openDatabase();
+      try {
+        return await new Promise<string | undefined>((resolve, reject) => {
+          const tx = db.transaction(PHOTOS, 'readonly');
+          const request = tx.objectStore(PHOTOS).get(key);
+          tx.oncomplete = () => resolve(request.result);
+          tx.onabort = () => reject(tx.error ?? new Error('無法讀取本機照片。'));
+        });
+      } finally { db.close(); }
+    }),
+    saveThumbnail: (key: string, thumbnail: string): Promise<void> => enqueue(async () => {
+      if (!thumbnail.startsWith('data:image/jpeg;base64,') || thumbnail.length > 200_000) return;
+      const db = await openDatabase();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(PHOTOS, 'readwrite'); const store = tx.objectStore(PHOTOS);
+          const original = store.getKey(key);
+          original.onsuccess = () => {
+            if (original.result === undefined) return;
+            const cached = store.get(THUMBNAIL + key);
+            cached.onsuccess = () => { if (cached.result !== thumbnail) store.put(thumbnail, THUMBNAIL + key); };
+          };
+          tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+        });
+      } finally { db.close(); }
+    }),
+    save: (state: CardStoreState): Promise<CardStoreState> => {
       // Capture the value at invocation rather than after earlier writes finish.
       const snapshot = structuredClone(state);
       return enqueue(async () => {
         const db = await openDatabase();
-        try { await writeSnapshot(db, snapshot); } finally { db.close(); }
+        try { return await writeSnapshot(db, snapshot); } finally { db.close(); }
       });
     },
   };
@@ -252,3 +318,6 @@ const browserStorage = createCardStorage();
 export const acquireCardStoreLease = browserStorage.acquireLease;
 export const loadCardStore = browserStorage.load;
 export const saveCardStore = browserStorage.save;
+export const loadStoredCardPhoto = browserStorage.getPhoto;
+export const loadStoredCardThumbnail = (key: string) => browserStorage.getPhoto(THUMBNAIL + key);
+export const saveStoredCardThumbnail = browserStorage.saveThumbnail;

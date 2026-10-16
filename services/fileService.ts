@@ -28,7 +28,7 @@ export const exportToExcel = async (cards: BusinessCard[]): Promise<void> => {
  */
 export const exportToJson = (cards: BusinessCard[]): void => {
     if (cards.length === 0) return;
-    const jsonString = JSON.stringify(cards, null, 2);
+    const jsonString = JSON.stringify(cards.map(({ imageLocalId: _, ...portable }) => portable), null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

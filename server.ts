@@ -4,6 +4,7 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { createGeminiRouter } from './server/geminiRoutes';
 import { createDrivePhotoRouter } from './server/drivePhotoRoutes';
+import { createGoogleSessionRouter } from './server/googleSessionRoutes';
 
 // Load local .env (if present) for local developer fallback matching the host platform
 try {
@@ -37,6 +38,7 @@ async function startServer() {
   app.disable('x-powered-by');
   app.use('/api/gemini', createGeminiRouter());
   app.use('/api/drive', createDrivePhotoRouter());
+  app.use('/api/google', createGoogleSessionRouter());
 
   // --- Vite Middleware Server Setup ---
   if (process.env.NODE_ENV !== "production") {

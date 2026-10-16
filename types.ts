@@ -11,6 +11,7 @@ export interface BusinessCard {
   rawText: string;
   timestamp: number;
   imageBase64?: string; // For local/temp storage and runtime display.
+  imageLocalId?: string; // Original photo in the device's separate IndexedDB photo store.
   imageDriveId?: string; // Google Drive File ID. NOT a full URL.
   isProcessing?: boolean;
   isError?: boolean;

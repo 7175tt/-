@@ -57,6 +57,9 @@ const CardList: React.FC<CardListProps> = ({
   const [sortOrder, setSortOrder] = useState<'time-desc' | 'name-asc'>('time-desc');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showSearchOptions, setShowSearchOptions] = useState(false);
+  const [page, setPage] = useState(0);
+  const browseRef = useRef<HTMLElement>(null);
+  const pageSize = 24;
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -88,6 +91,11 @@ const CardList: React.FC<CardListProps> = ({
       ? (a.name || '').localeCompare(b.name || '', 'zh-Hant')
       : (b.timestamp || 0) - (a.timestamp || 0)), [cards, searchQuery, searchCategory, sortOrder]);
   const exportableCards = filteredAndSortedCards.filter(card => !card.isProcessing && !card.isError);
+  const pageCount = Math.max(1, Math.ceil(filteredAndSortedCards.length / pageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pageCards = filteredAndSortedCards.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  useEffect(() => { setPage(0); browseRef.current?.scrollTo(0, 0); }, [searchQuery, searchCategory, sortOrder, viewMode]);
+  const changePage = (next: number) => { setPage(next); browseRef.current?.scrollTo(0, 0); };
   const hasSearch = searchQuery.trim().length > 0;
   const pendingCount = cards.filter(card => card.needsReview && !card.isProcessing && !card.isError).length;
 
@@ -188,14 +196,14 @@ const CardList: React.FC<CardListProps> = ({
         </p>}
       </header>
 
-      <main className="flex-grow overflow-y-auto px-2 sm:px-3 pb-3" aria-label="名片瀏覽區">
+      <main ref={browseRef} className="flex-grow overflow-y-auto px-2 sm:px-3 pb-3" aria-label="名片瀏覽區">
         {filteredAndSortedCards.length > 0 ? viewMode === 'card' ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,19rem),1fr))] items-start gap-2">
-            {filteredAndSortedCards.map(card => <CardItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
+            {pageCards.map(card => <CardItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
           </div>
         ) : (
           <div className="bg-gray-800/60 rounded-lg divide-y divide-gray-700">
-            {filteredAndSortedCards.map(card => <CardRowItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
+            {pageCards.map(card => <CardRowItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={onEditCard} onRetryCard={onRetryCard} onLazyImageLoaded={onLazyImageLoaded} canLoadCloudImages={canLoadCloudImages && card.cloudAccount === googleUser?.email} />)}
           </div>
         ) : hasSearch ? (
           <div className="text-center py-12">
@@ -215,6 +223,11 @@ const CardList: React.FC<CardListProps> = ({
           </div>
         )}
       </main>
+      {pageCount > 1 && <nav aria-label="名片分頁" className="shrink-0 flex items-center justify-center gap-3 px-2 border-t border-gray-800 bg-gray-900 text-xs">
+        <button onClick={() => changePage(currentPage - 1)} disabled={currentPage === 0} className="min-h-11 px-2 text-blue-300 disabled:text-gray-600" aria-label="上一頁名片">上一頁</button>
+        <span role="status">{currentPage * pageSize + 1}–{Math.min((currentPage + 1) * pageSize, filteredAndSortedCards.length)}／{filteredAndSortedCards.length} 張</span>
+        <button onClick={() => changePage(currentPage + 1)} disabled={currentPage + 1 >= pageCount} className="min-h-11 px-2 text-blue-300 disabled:text-gray-600" aria-label="下一頁名片">下一頁</button>
+      </nav>}
     </div>
   );
 };

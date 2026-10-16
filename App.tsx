@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect, useSyncExternalStore }
 import { BusinessCard, AppView, GoogleUser, SyncStatus } from './types';
 import { useCardStore } from './hooks/useCardStore';
 import { scanBusinessCard, getScanReadiness } from './services/geminiService';
-import { isSameCardPhoto } from './services/cardPhoto';
+import { isSameCardPhoto, resolveCardPhoto } from './services/cardPhoto';
 import { getGeminiKeySettings, subscribeGeminiKeySettings } from './services/geminiKeySettings';
 import { applySyncResult, belongsToAccount, synchronizeCards } from './services/syncService';
 import * as GoogleApiService from './services/googleApiService';
@@ -14,6 +14,7 @@ import ConfirmationDialog from './components/ConfirmationDialog';
 import InstructionsModal from './components/InstructionsModal';
 import GeminiKeySettings from './components/GeminiKeySettings';
 import { GOOGLE_CLIENT_ID } from './config';
+import { googleSessionConfiguration, googleSessionRequest, GoogleSessionError, rememberGoogleEmail, rememberedGoogleEmail } from './services/googleSession';
 
 declare const gapi: any;
 const AUTH_KEY = 'KEEPER_GOOGLE_AUTH';
@@ -39,6 +40,13 @@ export default function App() {
   const [gapiReady, setGapiReady] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
   const [googleAttempt, setGoogleAttempt] = useState(0);
+  const [needsReconnect, setNeedsReconnect] = useState(false);
+  const persistentLogin = useRef(false);
+  const authBlocked = useRef(false);
+  const authExpiresAt = useRef(0);
+  const renewAfter = useRef(0);
+  const renewal = useRef<Promise<void> | null>(null);
+  const authRequest = useRef<AbortController | null>(null);
   const [syncStatus, setSyncStatus] = useState(SyncStatus.LOCAL);
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
@@ -95,87 +103,135 @@ export default function App() {
     return () => controller.abort();
   }, [online, syncTick]);
 
-  const handleAuth = useCallback(async (token: any) => {
-    if (token.error) {
-      notify('error', 'Google 登入未完成，名片仍保留在本機。請重新登入。');
-      return;
+  const requireReconnect = useCallback(() => {
+    authBlocked.current = true;
+    setNeedsReconnect(true);
+    setGoogleError('Google 需要重新連線，本機名片與照片已保留。');
+    setSyncStatus(SyncStatus.ERROR);
+  }, []);
+
+  const handleAuth = useCallback(async (token: any, silent = false) => {
+    if (token.error) throw new Error('Google 登入未完成，請再試一次。');
+    const preserving = silent && !!userRef.current;
+    const previousEmail = preserving ? userRef.current?.email : null;
+    const currentGeneration = preserving ? generation.current : ++generation.current;
+    if (!preserving) {
+      userRef.current = null; setGoogleUser(null); setSpreadsheetId(null);
+      GoogleApiService.signOut();
     }
-    const currentGeneration = ++generation.current;
-    userRef.current = null;
-    setGoogleUser(null);
-    setSpreadsheetId(null);
+    const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error('無法讀取 Google 帳號，請重新連線。');
+    const profile = await response.json();
+    if (typeof profile.email !== 'string' || !profile.email) throw new Error('無法確認登入帳號。');
+    if (generation.current !== currentGeneration) return;
+    if (previousEmail && previousEmail !== profile.email) {
+      requireReconnect(); throw new Error('Google 帳號已變更，請重新連線後確認帳號。');
+    }
+    gapi.client.setToken(token);
+    const user = { name: profile.name || profile.email, email: profile.email, picture: profile.picture || '' };
+    userRef.current = user; setGoogleUser(user);
+    authExpiresAt.current = Date.now() + (Number(token.expires_in) || 3600) * 1000;
+    authBlocked.current = false; renewAfter.current = 0;
+    setNeedsReconnect(false); setGoogleError(null); setSyncStatus(SyncStatus.READY_TO_SYNC);
+    rememberGoogleEmail(user.email);
     try {
-      // Clear any previous account's cached Drive/Sheet IDs before applying its new token.
-      GoogleApiService.signOut();
-      gapi.client.setToken(token);
-      const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: { Authorization: `Bearer ${token.access_token}` },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error('無法讀取 Google 帳號，請重新登入。');
-      const profile = await response.json();
-      if (typeof profile.email !== 'string' || !profile.email) throw new Error('無法確認登入帳號。');
-      if (generation.current !== currentGeneration) return;
-      const user = { name: profile.name || profile.email, email: profile.email, picture: profile.picture || '' };
-      userRef.current = user;
-      setGoogleUser(user);
-      setSyncStatus(SyncStatus.READY_TO_SYNC);
-      setGoogleError(null);
-      // Session-only tokens; do not keep bearer tokens in persistent local storage.
-      try {
-        sessionStorage.setItem(AUTH_KEY, JSON.stringify({ tokenResponse: token, user, expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000 }));
-        localStorage.removeItem(AUTH_KEY);
-      } catch { /* Login can work even when browser storage for the session is unavailable. */ }
-      notify('success', '已登入，正在自動同步此帳號與未同步的本機名片。');
-    } catch (error) {
-      if (generation.current !== currentGeneration) return;
-      setSyncStatus(SyncStatus.ERROR);
-      setGoogleUser(null);
-      GoogleApiService.signOut();
-      notify('error', errorText(error));
+      sessionStorage.setItem(AUTH_KEY, JSON.stringify({ tokenResponse: token, user, expiresAt: authExpiresAt.current }));
+      localStorage.removeItem(AUTH_KEY);
+    } catch { /* Active login still works without optional tab storage. */ }
+    if (!silent) notify('success', token.deviceRemembered ? '已登入，這個裝置會自動續接 Google 同步。' : token.deviceRemembered === false ? '已登入。本次 Google 未提供長期授權，之後可能需要重新連線。' : '已登入，正在自動同步名片。');
+  }, [notify, requireReconnect]);
+  const authRef = useRef(handleAuth); authRef.current = handleAuth;
+
+  const renewSession = useCallback((): Promise<void> => {
+    if (renewal.current) return renewal.current;
+    if (authBlocked.current || !persistentLogin.current) {
+      requireReconnect(); return Promise.reject(new GoogleSessionError('請按「重新連線 Google」恢復同步。', 401));
     }
-  }, [notify]);
-  const authRef = useRef(handleAuth);
-  authRef.current = handleAuth;
+    if (Date.now() < renewAfter.current) return Promise.reject(new GoogleSessionError('Google 連線稍後會再試。', 503));
+    const epoch = generation.current;
+    const controller = new AbortController(); authRequest.current = controller;
+    const operation = (async () => {
+      try {
+        const token = await googleSessionRequest('session', undefined, controller.signal);
+        if (controller.signal.aborted || generation.current !== epoch) throw new DOMException('登入更新已取消。', 'AbortError');
+        await authRef.current(token, true);
+      } catch (error) {
+        if (!controller.signal.aborted && generation.current === epoch) {
+          if (error instanceof GoogleSessionError && error.status === 401) requireReconnect();
+          else renewAfter.current = Date.now() + 60_000;
+        }
+        throw error;
+      } finally {
+        if (authRequest.current === controller) authRequest.current = null;
+        if (renewal.current === operation) renewal.current = null;
+      }
+    })();
+    renewal.current = operation;
+    return operation;
+  }, [requireReconnect]);
 
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes('PLACEHOLDER')) {
-      setGoogleError('目前尚未啟用 Google 同步，可以先在本機整理名片。');
-      return;
-    }
+    if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes('PLACEHOLDER')) return;
     let active = true;
     (async () => {
       try {
         await GoogleApiService.loadGapi();
+        const configuration = await googleSessionConfiguration();
         if (!active) return;
-        await GoogleApiService.initGis(token => authRef.current(token));
+        persistentLogin.current = configuration.persistentConfigured === true;
+        await GoogleApiService.initGis(token => {
+          void authRef.current(token).catch(error => notify('error', errorText(error)));
+        }, persistentLogin.current ? {
+          clientId: configuration.clientId || GOOGLE_CLIENT_ID,
+          onCode: result => {
+            if (result.error || !result.code) { notify('error', 'Google 登入未完成，請再試一次。'); return; }
+            const epoch = generation.current;
+            const controller = new AbortController(); authRequest.current?.abort(); authRequest.current = controller;
+            void googleSessionRequest('code', { code: result.code }, controller.signal).then(token => {
+              if (!controller.signal.aborted && generation.current === epoch) return authRef.current(token);
+            }).catch(error => { if (!controller.signal.aborted) notify('error', errorText(error)); });
+          },
+        } : undefined);
         if (!active) return;
-        setGapiReady(true);
-        setGoogleError(null);
+        GoogleApiService.setTokenRenewalHandler(renewSession);
+        setGapiReady(true); setGoogleError(null);
+        let restored = false;
         try {
           const saved = JSON.parse(sessionStorage.getItem(AUTH_KEY) || 'null');
           if (saved?.expiresAt > Date.now() && typeof saved.user?.email === 'string' && saved.tokenResponse?.access_token) {
-            generation.current++;
-            GoogleApiService.signOut();
-            gapi.client.setToken(saved.tokenResponse);
-            userRef.current = saved.user;
-            setGoogleUser(saved.user);
-            setSyncStatus(SyncStatus.READY_TO_SYNC);
+            generation.current++; GoogleApiService.signOut(); gapi.client.setToken(saved.tokenResponse);
+            authExpiresAt.current = saved.expiresAt; authBlocked.current = false;
+            userRef.current = saved.user; setGoogleUser(saved.user); setSyncStatus(SyncStatus.READY_TO_SYNC);
+            rememberGoogleEmail(saved.user.email); restored = true;
           }
-        } catch { /* A malformed/expired session does not prevent local work. */ }
+        } catch { /* Ignore malformed tab storage. */ }
+        if (!restored && persistentLogin.current) {
+          try { await renewSession(); } catch { if (!rememberedGoogleEmail()) { setGoogleError(null); setNeedsReconnect(false); } }
+        } else if (!restored && rememberedGoogleEmail()) requireReconnect();
       } catch {
-        if (active) {
-          setGapiReady(false);
-          setGoogleError('Google 暫時無法連線，本機名片不受影響。');
-        }
+        if (active) { setGapiReady(false); setGoogleError('Google 暫時無法連線，本機名片不受影響。'); }
       }
     })();
-    return () => { active = false; };
-  }, [googleAttempt]);
+    return () => { active = false; authRequest.current?.abort(); GoogleApiService.setTokenRenewalHandler(null); };
+  }, [googleAttempt, notify, renewSession, requireReconnect]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (!userRef.current || authBlocked.current || !navigator.onLine || document.visibilityState !== 'visible') return;
+      if (authExpiresAt.current > Date.now() + 90_000) return;
+      if (persistentLogin.current) void renewSession().catch(() => {});
+      else if (authExpiresAt.current <= Date.now()) requireReconnect();
+    };
+    const timer = setInterval(refresh, 30_000);
+    document.addEventListener('visibilitychange', refresh); window.addEventListener('online', refresh);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh); window.removeEventListener('online', refresh); };
+  }, [renewSession, requireReconnect]);
 
   const sync = useCallback(async (manual = false) => {
     const user = userRef.current;
-    if (!user || !online || !ready || saving || storageError) return;
+    if (!user || !online || !ready || saving || storageError || authBlocked.current) return;
     if (syncing.current) { syncRequested.current = true; return; }
     syncing.current = true;
     syncRequested.current = false;
@@ -184,12 +240,14 @@ export default function App() {
     const isCurrent = () => runGeneration === generation.current && userRef.current?.email === user.email;
     setSyncStatus(SyncStatus.SYNCING);
     try {
+      if (persistentLogin.current && authExpiresAt.current <= Date.now() + 30_000) await renewSession();
+      if (!isCurrent()) return;
       // Persist account ownership before the first remote write. Otherwise a
       // partial upload followed by switching accounts could copy private cards.
       const unbound = snapshot.cards.filter(c => !c.cloudAccount);
       if (unbound.length) {
         const recoveredImages = new Map<string, string>();
-        for (const card of unbound.filter(c => c.imageDriveId && !c.imageBase64)) {
+        for (const card of unbound.filter(c => c.imageDriveId && !c.imageBase64 && !c.imageLocalId)) {
           try { recoveredImages.set(card.id, await GoogleApiService.getImageAsBase64(card.imageDriveId!)); }
           catch { throw new Error('有舊版名片的照片尚未下載，請登入原本的 Google 帳號再同步，或先備份文字資料。'); }
           if (!isCurrent()) return;
@@ -212,13 +270,14 @@ export default function App() {
     } catch (error) {
       if (isCurrent()) {
         setSyncStatus(SyncStatus.ERROR);
-        notify('error', `雲端同步未完成，變更仍保留在本機。${errorText(error)}`);
+        if (!authBlocked.current) notify('error', `雲端同步未完成，變更仍保留在本機。${errorText(error)}`);
+        else setNotice(null);
       }
     } finally {
       syncing.current = false;
       if (syncRequested.current) setSyncTick(t => t + 1);
     }
-  }, [online, ready, saving, storageError, update, notify]);
+  }, [online, ready, saving, storageError, update, notify, renewSession]);
 
   useEffect(() => {
     if (!googleUser || !ready || saving || storageError || !online) return;
@@ -248,8 +307,9 @@ export default function App() {
         try {
           if (!online) throw new Error('目前離線，照片已保存。連線後請點選重新辨識。');
           if (!canScan) throw new Error('請先在「工具 → AI 辨識設定」輸入個人 API key，再重新辨識。照片已保存，也可先手動填寫。');
-          if (!card.imageBase64) throw new Error('找不到名片照片，請重新拍攝。');
-          const data = await scanBusinessCard(card.imageBase64, controller.signal);
+          const photo = await resolveCardPhoto(card);
+          if (!photo) throw new Error('找不到名片照片，請重新拍攝。');
+          const data = await scanBusinessCard(photo, controller.signal);
           if (controller.signal.aborted) return;
           update(current => ({ ...current, cards: current.cards.map(c => c.id === card.id && c.isProcessing ? {
             ...c, ...data, timestamp: nextTime(c.timestamp), isProcessing: false, isError: false, errorMessage: undefined, needsReview: true,
@@ -297,13 +357,14 @@ export default function App() {
     scans.current.get(card.id)?.abort();
     update(current => {
       const existing = current.cards.find(c => c.id === card.id);
-      const photoChanged = card.imageBase64 !== editing?.imageBase64 || card.imageDriveId !== editing?.imageDriveId;
+      const photoChanged = card.imageBase64 !== editing?.imageBase64 || card.imageDriveId !== editing?.imageDriveId || card.imageLocalId !== editing?.imageLocalId;
       const saved = {
         ...card, cloudAccount: existing?.cloudAccount || card.cloudAccount,
         lastSyncedAt: existing?.lastSyncedAt,
         lastSyncedSheetId: existing?.lastSyncedSheetId,
         imageDriveId: photoChanged ? card.imageDriveId : existing?.imageDriveId || card.imageDriveId,
         imageBase64: photoChanged ? card.imageBase64 : existing?.imageBase64 || card.imageBase64,
+        imageLocalId: photoChanged ? card.imageLocalId : existing?.imageLocalId || card.imageLocalId,
         isError: false, isProcessing: false, needsReview: false, errorMessage: undefined,
         timestamp: nextTime(existing?.timestamp ?? card.timestamp),
       };
@@ -329,6 +390,9 @@ export default function App() {
     notify('success', '名片已刪除；有雲端副本時會自動同步刪除。');
   };
   const logout = () => {
+    authRequest.current?.abort(); renewal.current = null; authBlocked.current = true;
+    rememberGoogleEmail(null); setNeedsReconnect(false); setGoogleError(null);
+    void googleSessionRequest('logout').catch(() => {});
     generation.current++;
     userRef.current = null;
     GoogleApiService.signOut();
@@ -375,20 +439,28 @@ export default function App() {
     try {
       const complete = [];
       for (const card of cards) {
-        if (card.imageDriveId && !card.imageBase64) {
+        const image = await resolveCardPhoto(card);
+        if (image) {
+          const { imageLocalId: _, ...portable } = card;
+          complete.push({ ...portable, imageBase64: image });
+        } else if (card.imageDriveId) {
           if (!googleUser || card.cloudAccount !== googleUser.email) throw new Error('部分照片只在雲端，請登入對應的 Google 帳號後建立完整備份。');
           complete.push({ ...card, imageBase64: await GoogleApiService.getImageAsBase64(card.imageDriveId) });
-        } else complete.push(card);
+        } else if (card.imageLocalId) throw new Error('部分本機照片無法讀取，請保留頁面並重試備份。');
+        else complete.push(card);
       }
       fileService.exportToJson(complete);
     } catch (error) { notify('error', `完整備份未完成：${errorText(error)}`); }
   };
   const cacheImage = useCallback((source: BusinessCard, base64: string) => {
+    // If the device is full, keep only the visible component's small thumbnail;
+    // do not accumulate unsaved originals while browsing more pages.
+    if (storageError) return;
     update(current => {
       if (!current.cards.some(card => isSameCardPhoto(card, source))) return current;
       return { ...current, cards: current.cards.map(card => isSameCardPhoto(card, source) ? { ...card, imageBase64: base64 } : card) };
     });
-  }, [update]);
+  }, [update, storageError]);
 
   const statusText = storageError ? '尚未保存 · 請保留頁面並重試或下載備份'
     : saving ? '正在保存到這個裝置…'
@@ -419,12 +491,12 @@ export default function App() {
             <button onClick={() => void sync(true)} disabled={!online || saving || syncStatus === SyncStatus.SYNCING} className="text-blue-300 whitespace-nowrap disabled:opacity-50">立即同步</button>
           </div>}
         </div>}
-        {view === AppView.LIST && googleUser && syncStatus === SyncStatus.ERROR && <div role="alert" className="shrink-0 px-3 py-2 text-xs bg-amber-950/40 text-amber-200 flex flex-wrap items-center gap-x-3 gap-y-1">
+        {view === AppView.LIST && googleUser && syncStatus === SyncStatus.ERROR && !needsReconnect && <div role="alert" className="shrink-0 px-3 py-2 text-xs bg-amber-950/40 text-amber-200 flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>雲端同步未完成，本機資料保留。</span>
           <button onClick={() => void sync(true)} disabled={!online || saving} className="min-h-11 underline disabled:opacity-50">重試同步</button>
           {gapiReady && <button onClick={login} className="min-h-11 underline">重新登入</button>}
         </div>}
-        {googleError && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40">{googleError} <button className="underline ml-2" onClick={() => setGoogleAttempt(n => n + 1)}>重新連線 Google</button></div>}
+        {googleError && <div className="shrink-0 px-4 py-2 text-xs text-amber-200 bg-amber-950/40"><span>{googleError}</span> <button className="underline ml-2 min-h-11" onClick={needsReconnect && gapiReady ? login : () => setGoogleAttempt(n => n + 1)}>重新連線 Google</button></div>}
         {!canScan && <div className="shrink-0 px-3 text-xs text-amber-200 bg-amber-950/40 flex items-center justify-between gap-2"><span>設定個人 API key，即可使用 AI 辨識。</span><button onClick={() => setShowAiSettings(true)} className="min-h-9 shrink-0 px-2 underline">設定金鑰</button></div>}
         <input type="file" ref={excelInput} onChange={importExcel} className="hidden" accept=".xlsx,.xls" />
         <input type="file" ref={jsonInput} onChange={restore} className="hidden" accept=".json" />

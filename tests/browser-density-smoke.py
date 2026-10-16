@@ -81,7 +81,7 @@ async def main():
             await context.route('**/*', intercept)
             try:
                 await page.goto(BASE_URL, wait_until='domcontentloaded')
-                await expect(page.locator('article')).to_have_count(265)
+                await expect(page.locator('article')).to_have_count(24)
                 first_image = page.locator('article').first.get_by_alt_text('名片縮圖', exact=True)
                 await expect(first_image).to_be_visible()
                 await first_image.evaluate('image => image.decode()')

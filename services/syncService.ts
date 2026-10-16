@@ -1,5 +1,6 @@
 import type { BusinessCard } from '../types';
 import type { CardStoreState } from './cardStorage';
+import { resolveCardPhoto } from './cardPhoto';
 
 export interface CloudApi {
   getCloudCardsLight(): Promise<{ cards: BusinessCard[]; spreadsheetId: string }>;
@@ -53,6 +54,7 @@ export async function synchronizeCards(
       result.set(local.id, {
         ...local, ...cloud,
         imageBase64: (local.imageDriveId || undefined) === (cloud.imageDriveId || undefined) ? local.imageBase64 : undefined,
+        imageLocalId: (local.imageDriveId || undefined) === (cloud.imageDriveId || undefined) ? local.imageLocalId : undefined,
       });
       continue;
     }
@@ -62,9 +64,12 @@ export async function synchronizeCards(
       if (!local.cloudAccount) card.imageDriveId = undefined;
       // The other device may also have deleted the Drive photo. Recreate it
       // from the cached capture when preserving an unsent local edit.
-      if (!cloud && Number.isFinite(local.lastSyncedAt) && card.imageBase64) card.imageDriveId = undefined;
-      if (card.imageBase64 && !card.imageDriveId) {
-        card.imageDriveId = await api.uploadImageToDrive(card.imageBase64, card.id);
+      if (!cloud && Number.isFinite(local.lastSyncedAt) && (card.imageBase64 || card.imageLocalId)) card.imageDriveId = undefined;
+      if ((card.imageBase64 || card.imageLocalId) && !card.imageDriveId) {
+        const image = await resolveCardPhoto(card);
+        if (!image) throw new Error('本機原始照片無法讀取，請保留名片並重試。');
+        check();
+        card.imageDriveId = await api.uploadImageToDrive(image, card.id);
       }
       check();
       await api.updateCardInSheet(card);
@@ -97,6 +102,7 @@ export function applySyncResult(current: CardStoreState, snapshot: CardStoreStat
     currentById.set(incoming.id, {
       ...incoming,
       imageBase64: incoming.imageBase64 ?? (now?.imageDriveId === incoming.imageDriveId ? now?.imageBase64 : undefined),
+      imageLocalId: incoming.imageLocalId ?? (now?.imageDriveId === incoming.imageDriveId ? now?.imageLocalId : undefined),
     });
   }
   const acknowledged = new Map(snapshot.deletions.filter(d => d.account === account && result.deleted.includes(d.id)).map(d => [d.id, d.deletedAt]));
